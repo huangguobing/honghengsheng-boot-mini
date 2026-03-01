@@ -6,8 +6,10 @@ import cn.iocoder.stmc.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentPageReqVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * ERP 付款 Mapper
@@ -68,5 +70,13 @@ public interface PaymentMapper extends BaseMapperX<PaymentDO> {
         return selectList(new LambdaQueryWrapperX<PaymentDO>()
                 .eq(PaymentDO::getOrderId, orderId));
     }
+
+    /**
+     * 查询未付款供应商汇总（status IN (0, 10)）
+     */
+    @Select("SELECT supplier_id AS supplierId, COUNT(*) AS unpaidCount, COALESCE(SUM(amount), 0) AS unpaidAmount " +
+            "FROM erp_payment WHERE deleted = 0 AND status IN (0, 10) " +
+            "GROUP BY supplier_id ORDER BY unpaidAmount DESC")
+    List<Map<String, Object>> selectUnpaidSupplierSummary();
 
 }
