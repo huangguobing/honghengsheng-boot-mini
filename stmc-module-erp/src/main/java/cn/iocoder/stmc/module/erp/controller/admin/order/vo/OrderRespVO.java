@@ -91,6 +91,12 @@ public class OrderRespVO {
     @Schema(description = "总净利", example = "1900")
     private BigDecimal totalNetProfit;
 
+    @Schema(description = "其他费用金额", example = "50")
+    private BigDecimal extraCost;
+
+    @Schema(description = "其他费用备注", example = "快递费")
+    private String extraCostRemark;
+
     @Schema(description = "成本是否已填充", example = "false")
     private Boolean costFilled;
 

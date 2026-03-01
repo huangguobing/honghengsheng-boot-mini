@@ -18,6 +18,12 @@ public class OrderCostFillReqVO {
     @NotNull(message = "订单ID不能为空")
     private Long orderId;
 
+    @Schema(description = "其他费用金额", example = "50")
+    private BigDecimal extraCost;
+
+    @Schema(description = "其他费用备注", example = "快递费")
+    private String extraCostRemark;
+
     @Schema(description = "明细成本信息列表", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotEmpty(message = "明细成本信息不能为空")
     @Valid

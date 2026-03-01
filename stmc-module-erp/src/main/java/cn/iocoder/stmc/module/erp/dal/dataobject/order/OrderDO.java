@@ -124,6 +124,16 @@ public class OrderDO extends BaseDO {
     private BigDecimal totalNetProfit;
 
     /**
+     * 其他费用金额
+     */
+    private BigDecimal extraCost;
+
+    /**
+     * 其他费用备注
+     */
+    private String extraCostRemark;
+
+    /**
      * 成本是否已填充
      */
     private Boolean costFilled;
