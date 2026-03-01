@@ -766,9 +766,16 @@ public class OrderServiceImpl implements OrderService {
         updateOrder.setTotalPurchaseAmount(totalPurchaseAmount);
         updateOrder.setTotalGrossProfit(totalGrossProfit);
         updateOrder.setTotalTaxAmount(totalTaxAmount);
-        // 其他费用扣减净利（保留原订单的 extraCost）
-        BigDecimal extraCost = order.getExtraCost() != null ? order.getExtraCost() : BigDecimal.ZERO;
-        updateOrder.setTotalNetProfit(totalNetProfit.subtract(extraCost));
+        // 其他费用扣减净利
+        BigDecimal extraCostVal = BigDecimal.ZERO;
+        if (editReqVO.getExtraCost() != null) {
+            extraCostVal = editReqVO.getExtraCost();
+            updateOrder.setExtraCost(editReqVO.getExtraCost());
+            updateOrder.setExtraCostRemark(editReqVO.getExtraCostRemark());
+        } else if (order.getExtraCost() != null) {
+            extraCostVal = order.getExtraCost();
+        }
+        updateOrder.setTotalNetProfit(totalNetProfit.subtract(extraCostVal));
         // 不更新costFilled、costFilledBy、costFilledTime（保留首次填充信息）
 
         orderMapper.updateById(updateOrder);

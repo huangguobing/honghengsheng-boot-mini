@@ -66,6 +66,12 @@ public class OrderSaveReqVO {
     @Schema(description = "发货费/运费", example = "30")
     private BigDecimal shippingFee;
 
+    @Schema(description = "其他费用金额", example = "50")
+    private BigDecimal extraCost;
+
+    @Schema(description = "其他费用备注", example = "快递费")
+    private String extraCostRemark;
+
     @Schema(description = "商品明细列表", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotEmpty(message = "商品明细不能为空")
     @Valid
