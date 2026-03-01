@@ -6,6 +6,7 @@ import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSaveReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSupplierSummaryRespVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.supplier.SupplierDO;
@@ -26,6 +27,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.stmc.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.stmc.module.erp.enums.ErrorCodeConstants.*;
@@ -339,6 +345,32 @@ public class PaymentServiceImpl implements PaymentService {
         if (orderService.getOrder(orderId) == null) {
             throw exception(PAYMENT_ORDER_NOT_FOUND);
         }
+    }
+
+    @Override
+    public List<PaymentSupplierSummaryRespVO> getUnpaidSupplierSummary() {
+        List<Map<String, Object>> rawList = paymentMapper.selectUnpaidSupplierSummary();
+        if (CollUtil.isEmpty(rawList)) {
+            return Collections.emptyList();
+        }
+        // 收集供应商ID
+        Set<Long> supplierIds = rawList.stream()
+                .map(m -> ((Number) m.get("supplierId")).longValue())
+                .collect(Collectors.toSet());
+        Map<Long, SupplierDO> supplierMap = supplierService.getSupplierMap(supplierIds);
+        // 组装结果
+        List<PaymentSupplierSummaryRespVO> result = new ArrayList<>();
+        for (Map<String, Object> row : rawList) {
+            PaymentSupplierSummaryRespVO vo = new PaymentSupplierSummaryRespVO();
+            Long supplierId = ((Number) row.get("supplierId")).longValue();
+            vo.setSupplierId(supplierId);
+            SupplierDO supplier = supplierMap.get(supplierId);
+            vo.setSupplierName(supplier != null ? supplier.getName() : "未知供应商");
+            vo.setUnpaidCount(((Number) row.get("unpaidCount")).intValue());
+            vo.setUnpaidAmount(new BigDecimal(row.get("unpaidAmount").toString()));
+            result.add(vo);
+        }
+        return result;
     }
 
 }

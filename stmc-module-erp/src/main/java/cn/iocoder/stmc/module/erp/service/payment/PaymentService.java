@@ -3,6 +3,7 @@ package cn.iocoder.stmc.module.erp.service.payment;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSaveReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSupplierSummaryRespVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
 
 import javax.validation.Valid;
@@ -103,5 +104,12 @@ public interface PaymentService {
      */
     void updatePaymentFromCostEdit(Long orderId, Long supplierId, BigDecimal newAmount,
                                     LocalDate newPaymentDate, Boolean newIsPaid, String newRemark);
+
+    /**
+     * 获取供应商未付款汇总
+     *
+     * @return 供应商未付款汇总列表
+     */
+    List<PaymentSupplierSummaryRespVO> getUnpaidSupplierSummary();
 
 }
