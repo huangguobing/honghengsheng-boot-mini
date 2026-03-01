@@ -75,7 +75,7 @@ public interface PaymentMapper extends BaseMapperX<PaymentDO> {
      * 查询未付款供应商汇总（status IN (0, 10)）
      */
     @Select("SELECT supplier_id AS supplierId, COUNT(*) AS unpaidCount, COALESCE(SUM(amount), 0) AS unpaidAmount " +
-            "FROM erp_payment WHERE deleted = 0 AND status IN (0, 10) " +
+            "FROM erp_payment WHERE deleted = b'0' AND status IN (0, 10) " +
             "GROUP BY supplier_id ORDER BY unpaidAmount DESC")
     List<Map<String, Object>> selectUnpaidSupplierSummary();
 
