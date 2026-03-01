@@ -55,4 +55,9 @@ public interface ErrorCodeConstants {
     ErrorCode PAYMENT_PLAN_ALREADY_PAID = new ErrorCode(1_020_006_001, "付款计划已付款，不能重复操作");
     ErrorCode PAYMENT_PLAN_ALREADY_PAID_CANNOT_EDIT = new ErrorCode(1_020_006_002, "付款计划已付款，无法修改");
 
+    // ========== 产品管理 1-020-007-000 ==========
+    ErrorCode PRODUCT_NOT_EXISTS = new ErrorCode(1_020_007_000, "产品不存在");
+    ErrorCode PRODUCT_NAME_EXISTS = new ErrorCode(1_020_007_001, "产品名称已存在");
+    ErrorCode PRODUCT_SPEC_NOT_EXISTS = new ErrorCode(1_020_007_002, "产品规格不存在");
+
 }
