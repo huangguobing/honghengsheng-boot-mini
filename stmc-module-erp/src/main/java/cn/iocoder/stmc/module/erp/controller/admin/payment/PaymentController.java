@@ -7,6 +7,7 @@ import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSaveReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSupplierSummaryRespVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.customer.CustomerDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
@@ -101,6 +102,13 @@ public class PaymentController {
         // 填充关联信息
         fillPaymentInfo(voPageResult.getList());
         return success(voPageResult);
+    }
+
+    @GetMapping("/unpaid-supplier-summary")
+    @Operation(summary = "获得供应商未付款汇总")
+    @PreAuthorize("@ss.hasPermission('erp:payment:query')")
+    public CommonResult<List<PaymentSupplierSummaryRespVO>> getUnpaidSupplierSummary() {
+        return success(paymentService.getUnpaidSupplierSummary());
     }
 
     /**
