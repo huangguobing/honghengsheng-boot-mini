@@ -15,6 +15,9 @@ public class OrderItemSaveReqVO {
     @Schema(description = "明细ID（修改时传）", example = "1")
     private Long id;
 
+    @Schema(description = "明细类型（0商品 1费用）", example = "0")
+    private Integer itemType;
+
     // ========== 业务员填写字段（销售信息）==========
 
     @Schema(description = "商品名称", example = "衬塑钢卡")

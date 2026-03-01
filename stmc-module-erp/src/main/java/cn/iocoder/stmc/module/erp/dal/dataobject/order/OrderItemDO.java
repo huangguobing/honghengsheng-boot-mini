@@ -35,6 +35,11 @@ public class OrderItemDO extends BaseDO {
      */
     private Long orderId;
 
+    /**
+     * 明细类型（0商品 1费用）
+     */
+    private Integer itemType;
+
     // ========== 业务员填写字段（销售信息）==========
 
     /**
