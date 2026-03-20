@@ -13,7 +13,7 @@
 
     <name>${project.artifactId}</name>
     <description>
-        erp 模块，尚泰铭成ERP业务模块。
+        erp 模块，宏恒盛供应链管理ERP业务模块。
         包含：客户管理、供应商管理、订单管理、付款管理等功能
     </description>
 

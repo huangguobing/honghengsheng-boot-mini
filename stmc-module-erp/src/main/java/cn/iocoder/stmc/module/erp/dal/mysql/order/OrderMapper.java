@@ -6,6 +6,8 @@ import cn.iocoder.stmc.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.stmc.module.erp.controller.admin.home.vo.OrderStatisticsVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.CustomerStatisticsRespVO;
+import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.ProductSalesRespVO;
+import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.ProjectProfitRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.SalesmanStatisticsRespVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import org.apache.ibatis.annotations.*;
@@ -27,7 +29,11 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
                 .eqIfPresent(OrderDO::getCustomerId, reqVO.getCustomerId())
                 .eqIfPresent(OrderDO::getOrderType, reqVO.getOrderType())
                 .eqIfPresent(OrderDO::getStatus, reqVO.getStatus())
+                .eqIfPresent(OrderDO::getInvoiceCompany, reqVO.getInvoiceCompany())
+                .eqIfPresent(OrderDO::getProjectId, reqVO.getProjectId())
+                .eqIfPresent(OrderDO::getIsReturn, reqVO.getIsReturn())
                 .eqIfPresent(OrderDO::getSalesmanId, reqVO.getSalesmanId()) // 按业务员过滤
+                .eqIfPresent(OrderDO::getOrderCategory, reqVO.getOrderCategory()) // 按订单类别过滤
                 .betweenIfPresent(OrderDO::getOrderDate, reqVO.getOrderDate())
                 .betweenIfPresent(OrderDO::getCreateTime, reqVO.getCreateTime())
                 .last("ORDER BY FIELD(status, 0, 10, 20, 50), create_time DESC"));
@@ -52,6 +58,7 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "COALESCE(SUM(total_net_profit), 0) as net_profit " +
             "FROM erp_order " +
             "WHERE deleted = 0 " +
+            "AND order_category = #{orderCategory} " +
             "AND order_date >= #{startTime} " +
             "AND order_date < #{endTime}")
     @Results({
@@ -62,7 +69,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             @Result(column = "net_profit", property = "netProfit")
     })
     OrderStatisticsVO selectStatisticsByDateRange(@Param("startTime") LocalDateTime startTime,
-                                                   @Param("endTime") LocalDateTime endTime);
+                                                   @Param("endTime") LocalDateTime endTime,
+                                                   @Param("orderCategory") Integer orderCategory);
 
     /**
      * 统计指定状态的订单数量
@@ -105,6 +113,7 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "  COALESCE(SUM(total_net_profit), 0) as net_profit " +
             "FROM erp_order " +
             "WHERE deleted = 0 " +
+            "  AND order_category = #{orderCategory} " +
             "  AND order_date &gt;= #{startTime} " +
             "  AND order_date &lt; #{endTime} " +
             "<if test='salesmanId != null'>" +
@@ -121,7 +130,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
     OrderStatisticsVO selectStatisticsByDateRangeAndSalesman(
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime,
-            @Param("salesmanId") Long salesmanId);
+            @Param("salesmanId") Long salesmanId,
+            @Param("orderCategory") Integer orderCategory);
 
     /**
      * 按业务员分组统计销售数据
@@ -148,6 +158,7 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "LEFT JOIN system_dept d ON u.dept_id = d.id " +
             "WHERE o.deleted = 0 " +
             "  AND o.salesman_id IS NOT NULL " +
+            "  AND o.order_category = #{orderCategory} " +
             "  <if test='startTime != null'>" +
             "    AND o.create_time &gt;= #{startTime} " +
             "  </if>" +
@@ -167,7 +178,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime,
             @Param("salesmanName") String salesmanName,
-            @Param("mobile") String mobile);
+            @Param("mobile") String mobile,
+            @Param("orderCategory") Integer orderCategory);
 
     /**
      * 按客户分组统计销售数据
@@ -194,6 +206,7 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "LEFT JOIN erp_customer c ON o.customer_id = c.id " +
             "WHERE o.deleted = 0 " +
             "  AND o.customer_id IS NOT NULL " +
+            "  AND o.order_category = #{orderCategory} " +
             "  <if test='startTime != null'>" +
             "    AND o.create_time &gt;= #{startTime} " +
             "  </if>" +
@@ -213,6 +226,80 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime,
             @Param("customerName") String customerName,
-            @Param("mobile") String mobile);
+            @Param("mobile") String mobile,
+            @Param("orderCategory") Integer orderCategory);
+
+    /**
+     * 按项目分组统计利润数据
+     */
+    @Select("<script>" +
+            "SELECT " +
+            "  o.project_id as projectId, " +
+            "  p.name as projectName, " +
+            "  c.name as customerName, " +
+            "  COUNT(*) as orderCount, " +
+            "  COALESCE(SUM(o.payable_amount), 0) as salesAmount, " +
+            "  COALESCE(SUM(o.total_purchase_amount), 0) as purchaseAmount, " +
+            "  COALESCE(SUM(o.shipping_fee), 0) as freightAmount, " +
+            "  COALESCE(SUM(o.total_quantity), 0) as totalQuantity, " +
+            "  COALESCE(SUM(w.order_weight), 0) as totalWeight, " +
+            "  COALESCE(SUM(o.total_net_profit), 0) as netProfit " +
+            "FROM erp_order o " +
+            "LEFT JOIN erp_project p ON o.project_id = p.id " +
+            "LEFT JOIN erp_customer c ON o.customer_id = c.id " +
+            "LEFT JOIN (SELECT order_id, SUM(weight) as order_weight FROM erp_order_item WHERE deleted = 0 AND item_type = 0 GROUP BY order_id) w ON w.order_id = o.id " +
+            "WHERE o.deleted = 0 " +
+            "  AND o.project_id IS NOT NULL " +
+            "  AND o.order_category = #{orderCategory} " +
+            "  <if test='startTime != null'>" +
+            "    AND o.create_time &gt;= #{startTime} " +
+            "  </if>" +
+            "  <if test='endTime != null'>" +
+            "    AND o.create_time &lt; #{endTime} " +
+            "  </if>" +
+            "  <if test='projectName != null and projectName != \"\"'>" +
+            "    AND p.name LIKE CONCAT('%', #{projectName}, '%') " +
+            "  </if>" +
+            "GROUP BY o.project_id, p.name, c.name " +
+            "ORDER BY salesAmount DESC" +
+            "</script>")
+    List<ProjectProfitRespVO> selectProjectProfitStatistics(
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime,
+            @Param("projectName") String projectName,
+            @Param("orderCategory") Integer orderCategory);
+
+    /**
+     * 按产品/规格分组统计销售数据
+     */
+    @Select("<script>" +
+            "SELECT " +
+            "  oi.product_name as productName, " +
+            "  oi.spec as spec, " +
+            "  SUM(oi.sale_quantity) as totalQuantity, " +
+            "  COALESCE(SUM(oi.weight), 0) as totalWeight, " +
+            "  SUM(oi.sale_amount) as salesAmount, " +
+            "  COUNT(DISTINCT oi.order_id) as orderCount " +
+            "FROM erp_order_item oi " +
+            "INNER JOIN erp_order o ON oi.order_id = o.id " +
+            "WHERE oi.deleted = 0 AND o.deleted = 0 AND oi.item_type = 0 " +
+            "  AND o.order_category = #{orderCategory} " +
+            "  <if test='startTime != null'>" +
+            "    AND o.create_time &gt;= #{startTime} " +
+            "  </if>" +
+            "  <if test='endTime != null'>" +
+            "    AND o.create_time &lt; #{endTime} " +
+            "  </if>" +
+            "  <if test='productName != null and productName != \"\"'>" +
+            "    AND oi.product_name LIKE CONCAT('%', #{productName}, '%') " +
+            "  </if>" +
+            "GROUP BY oi.product_name, oi.spec " +
+            "ORDER BY salesAmount DESC" +
+            "</script>")
+    List<ProductSalesRespVO> selectProductSalesStatistics(
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime,
+            @Param("productName") String productName,
+            @Param("orderCategory") Integer orderCategory);
 
 }

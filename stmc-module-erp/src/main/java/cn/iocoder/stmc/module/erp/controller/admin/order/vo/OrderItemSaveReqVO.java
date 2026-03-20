@@ -41,6 +41,31 @@ public class OrderItemSaveReqVO {
     @Schema(description = "销售备注（如45度、90度）", example = "45度")
     private String saleRemark;
 
+    // ========== 产品属性字段 ==========
+
+    @Schema(description = "材质", example = "304")
+    private String material;
+
+    @Schema(description = "品牌", example = "青山")
+    private String brand;
+
+    @Schema(description = "厂家", example = "天津友发")
+    private String manufacturer;
+
+    // ========== 发货/送货信息字段 ==========
+
+    @Schema(description = "重量（吨）", example = "2.5")
+    private BigDecimal weight;
+
+    @Schema(description = "长度（米）", example = "6")
+    private BigDecimal length;
+
+    @Schema(description = "总米数", example = "60")
+    private BigDecimal totalMeters;
+
+    @Schema(description = "车号", example = "豫A6197J")
+    private String vehicleNo;
+
     // ========== 管理员填写字段（采购成本信息）==========
 
     @Schema(description = "进货单位")

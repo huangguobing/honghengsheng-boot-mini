@@ -28,6 +28,9 @@ public class OrderItemStatisticsRespVO {
     @Schema(description = "采购单位", example = "吨")
     private String purchaseUnit;
 
+    @Schema(description = "重量（吨）", example = "5.000")
+    private BigDecimal weight;
+
     @Schema(description = "采购单价", example = "5000.00")
     private BigDecimal purchasePrice;
 

@@ -7,7 +7,6 @@ import javax.validation.Valid;
 import javax.validation.constraints.NotEmpty;
 import javax.validation.constraints.NotNull;
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.List;
 
 @Schema(description = "管理后台 - ERP 订单成本填充 Request VO")
@@ -59,12 +58,6 @@ public class OrderCostFillReqVO {
 
         @Schema(description = "税额（手动输入）", example = "2")
         private BigDecimal taxAmount;
-
-        @Schema(description = "付款日期", example = "2024-01-15")
-        private LocalDate paymentDate;
-
-        @Schema(description = "是否已付款", example = "false")
-        private Boolean isPaid;
 
     }
 

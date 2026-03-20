@@ -106,6 +106,14 @@ public interface PaymentService {
                                     LocalDate newPaymentDate, Boolean newIsPaid, String newRemark);
 
     /**
+     * 根据订单ID获取付款列表
+     *
+     * @param orderId 订单ID
+     * @return 付款列表
+     */
+    List<PaymentDO> getPaymentListByOrderId(Long orderId);
+
+    /**
      * 获取供应商未付款汇总
      *
      * @return 供应商未付款汇总列表

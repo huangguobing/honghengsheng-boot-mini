@@ -68,4 +68,27 @@ public class PaymentPlanRespVO {
     @Schema(description = "创建时间", requiredMode = Schema.RequiredMode.REQUIRED)
     private LocalDateTime createTime;
 
+    // ========== 鸿恒盛扩展字段 ==========
+
+    @Schema(description = "类型：0=应付 1=应收", example = "0")
+    private Integer type;
+
+    @Schema(description = "关联采购单ID", example = "1")
+    private Long purchaseOrderId;
+
+    @Schema(description = "客户ID", example = "1")
+    private Long customerId;
+
+    @Schema(description = "项目ID", example = "1")
+    private Long projectId;
+
+    @Schema(description = "项目名称", example = "项目A")
+    private String projectName;
+
+    @Schema(description = "实际已付/已收金额", example = "3000.00")
+    private BigDecimal paidAmount;
+
+    @Schema(description = "收付方式：1=对公 2=对私 3=现金 4=微信 5=支付宝 6=承兑", example = "1")
+    private Integer paymentMethod;
+
 }

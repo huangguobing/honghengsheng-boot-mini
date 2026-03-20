@@ -35,6 +35,12 @@ public interface ErrorCodeConstants {
     ErrorCode ORDER_STATUS_NOT_ALLOW_EDIT_ITEMS = new ErrorCode(1_020_003_012, "当前订单状态不允许编辑商品");
     ErrorCode ORDER_ITEMS_CANNOT_BE_EMPTY = new ErrorCode(1_020_003_013, "订单商品明细不能为空");
     ErrorCode ORDER_DELETE_NOT_ALLOW = new ErrorCode(1_020_003_014, "当前订单状态不允许删除，只有待审核或已取消的订单可删除");
+    ErrorCode ORDER_COST_NOT_FILLED_FOR_SETTLEMENT = new ErrorCode(1_020_003_015, "订单成本尚未填充，无法进入结算");
+    ErrorCode ORDER_NO_RECEIVABLE_PLAN = new ErrorCode(1_020_003_016, "订单尚未建立应收计划，无法进入结算");
+    ErrorCode ORDER_NO_PAYABLE_PLAN = new ErrorCode(1_020_003_017, "订单尚未建立应付计划，无法进入结算");
+    ErrorCode ORDER_RECEIVABLE_AMOUNT_MISMATCH = new ErrorCode(1_020_003_018, "应收计划总额与订单应收金额不一致");
+    ErrorCode ORDER_PAYABLE_AMOUNT_MISMATCH = new ErrorCode(1_020_003_019, "应付计划总额与供应商采购金额不一致");
+    ErrorCode ORDER_STATUS_NOT_ALLOW_SETTLEMENT = new ErrorCode(1_020_003_020, "当前订单状态不允许进入结算");
 
     // ========== 付款管理 1-020-004-000 ==========
     ErrorCode PAYMENT_NOT_EXISTS = new ErrorCode(1_020_004_000, "付款记录不存在");
@@ -54,10 +60,29 @@ public interface ErrorCodeConstants {
     ErrorCode PAYMENT_PLAN_NOT_EXISTS = new ErrorCode(1_020_006_000, "付款计划不存在");
     ErrorCode PAYMENT_PLAN_ALREADY_PAID = new ErrorCode(1_020_006_001, "付款计划已付款，不能重复操作");
     ErrorCode PAYMENT_PLAN_ALREADY_PAID_CANNOT_EDIT = new ErrorCode(1_020_006_002, "付款计划已付款，无法修改");
+    ErrorCode PAYMENT_PLAN_PARTIAL_PAY_EXCEEDS = new ErrorCode(1_020_006_003,
+            "付款金额超过剩余应付金额（计划{}，已付{}，剩余{}，本次付款{}）");
 
     // ========== 产品管理 1-020-007-000 ==========
     ErrorCode PRODUCT_NOT_EXISTS = new ErrorCode(1_020_007_000, "产品不存在");
     ErrorCode PRODUCT_NAME_EXISTS = new ErrorCode(1_020_007_001, "产品名称已存在");
     ErrorCode PRODUCT_SPEC_NOT_EXISTS = new ErrorCode(1_020_007_002, "产品规格不存在");
+
+    // ========== 项目/工地管理 1-020-008-000 ==========
+    ErrorCode PROJECT_NOT_EXISTS = new ErrorCode(1_020_008_000, "项目/工地不存在");
+    ErrorCode PROJECT_NAME_EXISTS = new ErrorCode(1_020_008_001, "同一客户下项目名称已存在");
+    ErrorCode PROJECT_COMPLETED = new ErrorCode(1_020_008_002, "项目/工地已完工，不可继续开单");
+
+    // ========== 采购单管理 1-020-009-000 ==========
+    ErrorCode PURCHASE_ORDER_NOT_EXISTS = new ErrorCode(1_020_009_000, "采购单不存在");
+
+    // ========== 费用管理 1-020-010-000 ==========
+    ErrorCode EXPENSE_NOT_EXISTS = new ErrorCode(1_020_010_000, "费用记录不存在");
+
+    // ========== 票据管理 1-020-011-000 ==========
+    ErrorCode VOUCHER_NOT_EXISTS = new ErrorCode(1_020_011_000, "票据不存在");
+
+    // ========== 订单附件 1-020-012-000 ==========
+    ErrorCode ORDER_ATTACHMENT_NOT_EXISTS = new ErrorCode(1_020_012_000, "订单附件不存在");
 
 }

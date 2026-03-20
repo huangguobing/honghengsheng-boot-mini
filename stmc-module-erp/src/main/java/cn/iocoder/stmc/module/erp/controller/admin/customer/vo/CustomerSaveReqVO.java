@@ -56,4 +56,7 @@ public class CustomerSaveReqVO {
     @Schema(description = "备注", example = "VIP客户")
     private String remark;
 
+    @Schema(description = "是否下级开单: 0=否 1=是", example = "1")
+    private Integer needIntermediary;
+
 }

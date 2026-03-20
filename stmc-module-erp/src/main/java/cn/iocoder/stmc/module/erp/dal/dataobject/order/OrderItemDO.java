@@ -36,6 +36,11 @@ public class OrderItemDO extends BaseDO {
     private Long orderId;
 
     /**
+     * 关联主订单商品行ID（副订单商品行使用）
+     */
+    private Long parentItemId;
+
+    /**
      * 明细类型（0商品 1费用）
      */
     private Integer itemType;
@@ -76,6 +81,31 @@ public class OrderItemDO extends BaseDO {
      * 销售备注（如45度、90度）
      */
     private String saleRemark;
+
+    // ========== 产品属性字段（从产品规格带入）==========
+
+    /** 材质（如304、20#） */
+    private String material;
+
+    /** 品牌（如青山、友发） */
+    private String brand;
+
+    /** 厂家 */
+    private String manufacturer;
+
+    // ========== 发货/送货信息字段 ==========
+
+    /** 重量（吨） */
+    private BigDecimal weight;
+
+    /** 长度（米） */
+    private BigDecimal length;
+
+    /** 总米数（数量×长度） */
+    private BigDecimal totalMeters;
+
+    /** 车号 */
+    private String vehicleNo;
 
     // ========== 管理员填写字段（采购成本信息）==========
 
@@ -132,12 +162,18 @@ public class OrderItemDO extends BaseDO {
 
     /**
      * 付款日期
+     *
+     * @deprecated 废弃：付款信息已由 PaymentPlan 独立管理
      */
+    @Deprecated
     private LocalDate paymentDate;
 
     /**
      * 是否已付款（0未付款 1已付款）
+     *
+     * @deprecated 废弃：付款信息已由 PaymentPlan 独立管理
      */
+    @Deprecated
     private Boolean isPaid;
 
 }

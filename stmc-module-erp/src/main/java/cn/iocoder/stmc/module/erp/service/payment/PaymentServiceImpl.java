@@ -348,6 +348,11 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
+    public List<PaymentDO> getPaymentListByOrderId(Long orderId) {
+        return paymentMapper.selectListByOrderId(orderId);
+    }
+
+    @Override
     public List<PaymentSupplierSummaryRespVO> getUnpaidSupplierSummary() {
         List<Map<String, Object>> rawList = paymentMapper.selectUnpaidSupplierSummary();
         if (CollUtil.isEmpty(rawList)) {

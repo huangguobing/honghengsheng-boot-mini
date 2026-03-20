@@ -36,4 +36,19 @@ public class PaymentPlanPageReqVO extends PageParam {
     @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY)
     private LocalDate planDateEnd;
 
+    @Schema(description = "类型：0=应付 1=应收", example = "0")
+    private Integer type;
+
+    @Schema(description = "客户编号", example = "1")
+    private Long customerId;
+
+    @Schema(description = "项目编号", example = "1")
+    private Long projectId;
+
+    @Schema(description = "收付方式", example = "1")
+    private Integer paymentMethod;
+
+    @Schema(description = "订单编号", example = "1")
+    private Long orderId;
+
 }

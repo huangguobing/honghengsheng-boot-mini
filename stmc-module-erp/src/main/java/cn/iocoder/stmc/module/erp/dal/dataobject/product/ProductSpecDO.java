@@ -18,6 +18,16 @@ public class ProductSpecDO extends BaseDO {
     private Long productId;
     private String spec;
     private String unit;
+    /** 材质（如304、20#） */
+    private String material;
+    /** 品牌（如青山、友发） */
+    private String brand;
+    /** 厂家 */
+    private String manufacturer;
+    /**
+     * 计量方式（过磅/理计）
+     */
+    private String measurementType;
     private Integer status;
     private Integer sort;
 

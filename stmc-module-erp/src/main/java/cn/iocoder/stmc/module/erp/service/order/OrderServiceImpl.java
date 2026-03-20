@@ -3,6 +3,7 @@ package cn.iocoder.stmc.module.erp.service.order;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.IdUtil;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
+import cn.iocoder.stmc.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
 import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderCostFillReqVO;
@@ -12,8 +13,14 @@ import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderSaveReqVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.customer.CustomerDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderItemDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.expense.ExpenseDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.project.ProjectDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderItemDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.supplier.SupplierDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.voucher.VoucherDO;
 import cn.iocoder.stmc.module.erp.dal.mysql.order.OrderItemMapper;
 import cn.iocoder.stmc.module.erp.dal.mysql.order.OrderMapper;
 import cn.iocoder.stmc.module.erp.dal.mysql.payment.PaymentMapper;
@@ -24,6 +31,7 @@ import cn.iocoder.stmc.module.erp.enums.PaymentStatusEnum;
 import cn.iocoder.stmc.module.erp.service.customer.CustomerService;
 import cn.iocoder.stmc.module.erp.service.payment.PaymentService;
 import cn.iocoder.stmc.module.erp.service.paymentplan.PaymentPlanService;
+import cn.iocoder.stmc.module.erp.service.project.ProjectService;
 import cn.iocoder.stmc.module.erp.service.supplier.SupplierService;
 import cn.iocoder.stmc.module.erp.util.MoneyUtils;
 import cn.iocoder.stmc.module.system.api.user.AdminUserApi;
@@ -61,15 +69,14 @@ import static cn.iocoder.stmc.module.erp.enums.ErrorCodeConstants.*;
 public class OrderServiceImpl implements OrderService {
 
     /**
-     * 订单状态流转规则（新）
-     * 0=待审核 → 10=待填充成本 → 20=已完成
-     * 任意状态可取消 → 50=已取消
+     * 订单状态流转规则
+     * 1=进行中 → 3=已完成
+     * 进行中 可取消 → 50=已取消
      */
     private static final Map<Integer, Set<Integer>> VALID_STATUS_TRANSITIONS = new HashMap<>();
     static {
-        VALID_STATUS_TRANSITIONS.put(0, new HashSet<>(Arrays.asList(10, 50)));   // 待审核 -> 待填充成本、已取消
-        VALID_STATUS_TRANSITIONS.put(10, new HashSet<>(Arrays.asList(20, 50)));  // 待填充成本 -> 已完成、已取消
-        VALID_STATUS_TRANSITIONS.put(20, Collections.emptySet());                 // 已完成 -> 无
+        VALID_STATUS_TRANSITIONS.put(1, new HashSet<>(Arrays.asList(3, 50)));    // 进行中 -> 已完成、已取消
+        VALID_STATUS_TRANSITIONS.put(3, Collections.emptySet());                  // 已完成 -> 无
         VALID_STATUS_TRANSITIONS.put(50, Collections.emptySet());                 // 已取消 -> 无
     }
 
@@ -105,6 +112,25 @@ public class OrderServiceImpl implements OrderService {
     @Lazy // 避免循环依赖
     private PaymentPlanService paymentPlanService;
 
+    @Resource
+    private cn.iocoder.stmc.module.erp.service.log.OperationLogService operationLogService;
+
+    @Resource
+    @Lazy
+    private ProjectService projectService;
+
+    @Resource
+    private cn.iocoder.stmc.module.erp.dal.mysql.purchase.PurchaseOrderMapper purchaseOrderMapper;
+
+    @Resource
+    private cn.iocoder.stmc.module.erp.dal.mysql.purchase.PurchaseOrderItemMapper purchaseOrderItemMapper;
+
+    @Resource
+    private cn.iocoder.stmc.module.erp.dal.mysql.expense.ExpenseMapper expenseMapper;
+
+    @Resource
+    private cn.iocoder.stmc.module.erp.dal.mysql.voucher.VoucherMapper voucherMapper;
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long createOrder(OrderSaveReqVO createReqVO) {
@@ -117,9 +143,19 @@ public class OrderServiceImpl implements OrderService {
         // 构建订单主体
         OrderDO order = BeanUtils.toBean(createReqVO, OrderDO.class);
         order.setOrderNo(orderNo);
-        order.setStatus(OrderStatusEnum.PENDING_REVIEW.getStatus()); // 待审核
+        order.setStatus(OrderStatusEnum.CONFIRMED.getStatus()); // 进行中
         order.setPaidAmount(BigDecimal.ZERO);
         order.setCostFilled(false);
+        order.setInvoiceCompany(2); // 主订单固定鸿恒盛开票
+        order.setOrderCategory(0); // 主订单
+
+        // 根据客户"是否下级开单"标记决定是否推送给B角色
+        if (createReqVO.getCustomerId() != null) {
+            CustomerDO customer = customerService.getCustomer(createReqVO.getCustomerId());
+            if (customer != null && Integer.valueOf(1).equals(customer.getNeedIntermediary())) {
+                order.setSubOrderStatus(0); // 待B角色录入
+            }
+        }
 
         // 设置业务员信息
         Long loginUserId = SecurityFrameworkUtils.getLoginUserId();
@@ -137,10 +173,10 @@ public class OrderServiceImpl implements OrderService {
         BigDecimal totalAmount = BigDecimal.ZERO;
         for (OrderItemSaveReqVO item : items) {
             totalQuantity = totalQuantity.add(item.getSaleQuantity() != null ? item.getSaleQuantity() : BigDecimal.ZERO);
-            // 优先使用前端传的金额，否则用 数量×单价 计算
+            // 优先使用前端传的金额，否则用 重量×单价 计算
             BigDecimal saleAmount = item.getSaleAmount();
             if (saleAmount == null || saleAmount.compareTo(BigDecimal.ZERO) == 0) {
-                saleAmount = (item.getSaleQuantity() != null ? item.getSaleQuantity() : BigDecimal.ZERO)
+                saleAmount = (item.getWeight() != null ? item.getWeight() : BigDecimal.ZERO)
                         .multiply(item.getSalePrice() != null ? item.getSalePrice() : BigDecimal.ZERO);
             }
             item.setSaleAmount(saleAmount);
@@ -164,6 +200,10 @@ public class OrderServiceImpl implements OrderService {
             orderItemMapper.insert(item);
         }
 
+        // 记录操作日志
+        operationLogService.log("order", order.getId(), order.getOrderNo(),
+                "create", null, null, "创建订单");
+
         return order.getId();
     }
 
@@ -173,11 +213,8 @@ public class OrderServiceImpl implements OrderService {
         // 校验存在
         OrderDO order = validateOrderExists(updateReqVO.getId());
 
-        // 校验状态：待审核(0) 或 被驳回(50+有拒绝原因) 可修改
-        boolean canEdit = OrderStatusEnum.PENDING_REVIEW.getStatus().equals(order.getStatus())
-                || isRejectedOrder(order);
-
-        if (!canEdit) {
+        // 校验状态：进行中(1) 可修改
+        if (!OrderStatusEnum.CONFIRMED.getStatus().equals(order.getStatus())) {
             throw exception(ORDER_STATUS_NOT_ALLOW_UPDATE);
         }
 
@@ -187,22 +224,16 @@ public class OrderServiceImpl implements OrderService {
         // 更新订单主体
         OrderDO updateObj = BeanUtils.toBean(updateReqVO, OrderDO.class);
 
-        // 如果是被驳回的订单重新编辑，状态改回待审核，清空拒绝原因
-        if (isRejectedOrder(order)) {
-            updateObj.setStatus(OrderStatusEnum.PENDING_REVIEW.getStatus());
-            updateObj.setRemark(null);
-        }
-
         // 从明细计算汇总金额
         List<OrderItemSaveReqVO> items = updateReqVO.getItems();
         BigDecimal totalQuantity = BigDecimal.ZERO;
         BigDecimal totalAmount = BigDecimal.ZERO;
         for (OrderItemSaveReqVO item : items) {
             totalQuantity = totalQuantity.add(item.getSaleQuantity() != null ? item.getSaleQuantity() : BigDecimal.ZERO);
-            // 优先使用前端传的金额，否则用 数量×单价 计算
+            // 优先使用前端传的金额，否则用 重量×单价 计算
             BigDecimal saleAmount = item.getSaleAmount();
             if (saleAmount == null || saleAmount.compareTo(BigDecimal.ZERO) == 0) {
-                saleAmount = (item.getSaleQuantity() != null ? item.getSaleQuantity() : BigDecimal.ZERO)
+                saleAmount = (item.getWeight() != null ? item.getWeight() : BigDecimal.ZERO)
                         .multiply(item.getSalePrice() != null ? item.getSalePrice() : BigDecimal.ZERO);
             }
             item.setSaleAmount(saleAmount);
@@ -226,6 +257,10 @@ public class OrderServiceImpl implements OrderService {
             item.setOrderId(order.getId());
             orderItemMapper.insert(item);
         }
+
+        // 记录操作日志
+        operationLogService.log("order", order.getId(), order.getOrderNo(),
+                "update", null, null, "修改订单");
     }
 
     @Override
@@ -239,6 +274,10 @@ public class OrderServiceImpl implements OrderService {
         updateObj.setId(id);
         updateObj.setStatus(status);
         orderMapper.updateById(updateObj);
+
+        // 记录操作日志
+        operationLogService.log("order", id, order.getOrderNo(),
+                "status_change", null, null, "状态变更为 " + status);
     }
 
     @Override
@@ -247,13 +286,7 @@ public class OrderServiceImpl implements OrderService {
         // 校验存在
         OrderDO order = validateOrderExists(id);
 
-        // 校验状态：只有待审核/已取消可以删除
-        if (!OrderStatusEnum.PENDING_REVIEW.getStatus().equals(order.getStatus())
-                && !OrderStatusEnum.CANCELLED.getStatus().equals(order.getStatus())) {
-            throw exception(ORDER_DELETE_NOT_ALLOW);
-        }
-
-        // 删除关联通知（根据付款计划ID）
+        // 1. 删除关联通知（根据付款计划ID）
         List<Long> planIds = paymentPlanMapper.selectListByOrderId(id).stream()
                 .map(PaymentPlanDO::getId)
                 .collect(Collectors.toList());
@@ -261,17 +294,32 @@ public class OrderServiceImpl implements OrderService {
             paymentPlanService.deleteNotificationsByPlanIds(planIds);
         }
 
-        // 删除付款计划
+        // 2. 删除应收/应付付款计划
         paymentPlanMapper.deleteByOrderId(id);
 
-        // 删除付款单
+        // 3. 删除付款单
         paymentMapper.deleteByOrderId(id);
 
-        // 删除订单明细
+        // 4. 删除关联采购单明细 & 采购单
+        List<Long> purchaseOrderIds = purchaseOrderMapper.selectListByOrderId(id).stream()
+                .map(cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO::getId)
+                .collect(Collectors.toList());
+        if (!purchaseOrderIds.isEmpty()) {
+            purchaseOrderItemMapper.deleteByPurchaseOrderIds(purchaseOrderIds);
+        }
+        purchaseOrderMapper.deleteByOrderId(id);
+
+        // 5. 删除费用明细
+        expenseMapper.deleteByOrderId(id);
+
+        // 6. 删除订单明细
         orderItemMapper.deleteByOrderId(id);
 
-        // 删除订单
+        // 7. 删除订单
         orderMapper.deleteById(id);
+
+        operationLogService.log("order", id, order.getOrderNo(),
+                "delete", null, null, "删除订单（含关联采购计划、付款计划、费用明细）");
     }
 
     @Override
@@ -350,13 +398,135 @@ public class OrderServiceImpl implements OrderService {
         // 1. 校验订单存在
         OrderDO order = validateOrderExists(fillReqVO.getOrderId());
 
-        // 2. 校验订单状态（只有待填充成本状态可以填充）
-        if (!OrderStatusEnum.PENDING_COST.getStatus().equals(order.getStatus())) {
+        // 2. 校验订单状态（已取消不允许录入数据，其余状态均可）
+        if (OrderStatusEnum.CANCELLED.getStatus().equals(order.getStatus())) {
             throw exception(ORDER_STATUS_NOT_ALLOW_FILL_COST);
         }
 
-        // 3. 校验同供应商的付款日期和付款状态一致性
-        validateSupplierPaymentConsistency(fillReqVO.getItems());
+        // 3. 获取订单明细
+        List<OrderItemDO> items = orderItemMapper.selectListByOrderId(order.getId());
+        Map<Long, OrderItemDO> itemMap = items.stream().collect(Collectors.toMap(OrderItemDO::getId, i -> i));
+
+        // 4. 更新明细成本信息
+        BigDecimal totalPurchaseAmount = BigDecimal.ZERO;
+        BigDecimal totalGrossProfit = BigDecimal.ZERO;
+        BigDecimal totalTaxAmount = BigDecimal.ZERO;
+        BigDecimal totalNetProfit = BigDecimal.ZERO;
+
+        for (OrderCostFillReqVO.ItemCost itemCost : fillReqVO.getItems()) {
+            OrderItemDO item = itemMap.get(itemCost.getItemId());
+            if (item == null) {
+                continue;
+            }
+
+            // 更新采购信息
+            item.setPurchaseUnit(itemCost.getPurchaseUnit());
+            item.setPurchaseQuantity(itemCost.getPurchaseQuantity());
+            item.setPurchasePrice(itemCost.getPurchasePrice());
+
+            // 计算采购金额（重量×采购单价）
+            BigDecimal purchaseAmount = itemCost.getPurchaseAmount();
+            if (purchaseAmount == null && itemCost.getPurchaseQuantity() != null && itemCost.getPurchasePrice() != null) {
+                // 优先用重量计算，回退到数量（兼容旧数据）
+                BigDecimal weight = item.getWeight();
+                if (weight != null && weight.compareTo(BigDecimal.ZERO) > 0) {
+                    purchaseAmount = weight.multiply(itemCost.getPurchasePrice());
+                } else {
+                    purchaseAmount = itemCost.getPurchaseQuantity().multiply(itemCost.getPurchasePrice());
+                }
+            }
+            item.setPurchaseAmount(purchaseAmount != null ? purchaseAmount : BigDecimal.ZERO);
+
+            item.setPurchaseRemark(itemCost.getPurchaseRemark());
+            item.setSupplierId(itemCost.getSupplierId());
+            item.setTaxAmount(itemCost.getTaxAmount());
+
+            // 计算毛利（销售金额 - 采购金额）
+            BigDecimal grossProfit = (item.getSaleAmount() != null ? item.getSaleAmount() : BigDecimal.ZERO)
+                    .subtract(item.getPurchaseAmount() != null ? item.getPurchaseAmount() : BigDecimal.ZERO);
+            item.setGrossProfit(grossProfit);
+
+            // 计算净利（毛利 - 税额）
+            BigDecimal taxAmount = item.getTaxAmount() != null ? item.getTaxAmount() : BigDecimal.ZERO;
+            item.setNetProfit(grossProfit.subtract(taxAmount));
+
+            orderItemMapper.updateById(item);
+
+            // 累计汇总
+            totalPurchaseAmount = totalPurchaseAmount.add(item.getPurchaseAmount());
+            totalGrossProfit = totalGrossProfit.add(grossProfit);
+            totalTaxAmount = totalTaxAmount.add(taxAmount);
+            totalNetProfit = totalNetProfit.add(item.getNetProfit());
+        }
+
+        // 5. 更新订单汇总信息（不推状态、不创建付款单）
+        OrderDO updateOrder = new OrderDO();
+        updateOrder.setId(order.getId());
+        updateOrder.setTotalPurchaseAmount(totalPurchaseAmount);
+        updateOrder.setTotalGrossProfit(totalGrossProfit);
+        updateOrder.setTotalTaxAmount(totalTaxAmount);
+        BigDecimal extraCost = fillReqVO.getExtraCost() != null ? fillReqVO.getExtraCost() : BigDecimal.ZERO;
+        updateOrder.setTotalNetProfit(totalNetProfit.subtract(extraCost));
+        updateOrder.setExtraCost(fillReqVO.getExtraCost());
+        updateOrder.setExtraCostRemark(fillReqVO.getExtraCostRemark());
+        updateOrder.setCostFilled(true);
+        updateOrder.setCostFilledBy(SecurityFrameworkUtils.getLoginUserId());
+        updateOrder.setCostFilledTime(LocalDateTime.now());
+        orderMapper.updateById(updateOrder);
+
+        // 构建详细日志
+        StringBuilder logDesc = new StringBuilder();
+        logDesc.append("填充成本。");
+        // 按供应商分组记录
+        Set<Long> supplierIds = items.stream()
+                .map(OrderItemDO::getSupplierId).filter(id -> id != null)
+                .collect(Collectors.toSet());
+        Map<Long, SupplierDO> supplierMap = supplierService.getSupplierMap(new ArrayList<>(supplierIds));
+        Map<Long, List<OrderItemDO>> supplierGrouped = items.stream()
+                .filter(i -> i.getSupplierId() != null && i.getPurchaseAmount() != null
+                        && i.getPurchaseAmount().compareTo(BigDecimal.ZERO) > 0)
+                .collect(Collectors.groupingBy(OrderItemDO::getSupplierId));
+        for (Map.Entry<Long, List<OrderItemDO>> entry : supplierGrouped.entrySet()) {
+            SupplierDO supplier = supplierMap.get(entry.getKey());
+            String supplierName = supplier != null ? supplier.getName() : "未知供应商";
+            logDesc.append("\n【").append(supplierName).append("】");
+            BigDecimal supplierTotal = BigDecimal.ZERO;
+            for (OrderItemDO i : entry.getValue()) {
+                logDesc.append(i.getProductName());
+                if (i.getSpec() != null && !i.getSpec().isEmpty()) {
+                    logDesc.append("(").append(i.getSpec()).append(")");
+                }
+                logDesc.append(" ×").append(i.getPurchaseQuantity())
+                        .append(" @").append(i.getPurchasePrice())
+                        .append("=").append(i.getPurchaseAmount()).append("；");
+                supplierTotal = supplierTotal.add(i.getPurchaseAmount());
+            }
+            logDesc.append("小计：").append(supplierTotal);
+        }
+        logDesc.append("\n采购总额：").append(totalPurchaseAmount)
+                .append("，净利润：").append(updateOrder.getTotalNetProfit());
+        operationLogService.log("order", order.getId(), order.getOrderNo(),
+                "fill_cost", null, null, logDesc.toString());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void editOrderCost(OrderCostFillReqVO editReqVO) {
+        // 1. 校验订单存在
+        OrderDO order = validateOrderExists(editReqVO.getOrderId());
+
+        // 2. 校验成本是否已填充
+        if (!Boolean.TRUE.equals(order.getCostFilled())) {
+            throw exception(ORDER_COST_NOT_FILLED);
+        }
+
+        // 3. 校验订单状态：进行中、结算中、已完成均可编辑成本
+        Integer status = order.getStatus();
+        if (!OrderStatusEnum.CONFIRMED.getStatus().equals(status)
+                && !OrderStatusEnum.SETTLING.getStatus().equals(status)
+                && !OrderStatusEnum.COMPLETED.getStatus().equals(status)) {
+            throw exception(ORDER_STATUS_NOT_ALLOW_EDIT_COST);
+        }
 
         // 4. 获取订单明细
         List<OrderItemDO> items = orderItemMapper.selectListByOrderId(order.getId());
@@ -368,150 +538,25 @@ public class OrderServiceImpl implements OrderService {
         BigDecimal totalTaxAmount = BigDecimal.ZERO;
         BigDecimal totalNetProfit = BigDecimal.ZERO;
 
-        // 按供应商分组聚合采购金额（用于后续创建付款单）
-        // Map<supplierId, {totalAmount, paymentDate, isPaid}>
-        Map<Long, SupplierPaymentInfo> supplierPaymentMap = new HashMap<>();
-
-        for (OrderCostFillReqVO.ItemCost itemCost : fillReqVO.getItems()) {
-            OrderItemDO item = itemMap.get(itemCost.getItemId());
-            if (item == null) {
-                continue; // 跳过不存在的明细
-            }
-
-            // 更新采购信息
-            item.setPurchaseUnit(itemCost.getPurchaseUnit());
-            item.setPurchaseQuantity(itemCost.getPurchaseQuantity());
-            item.setPurchasePrice(itemCost.getPurchasePrice());
-
-            // 计算采购金额
-            BigDecimal purchaseAmount = itemCost.getPurchaseAmount();
-            if (purchaseAmount == null && itemCost.getPurchaseQuantity() != null && itemCost.getPurchasePrice() != null) {
-                purchaseAmount = itemCost.getPurchaseQuantity().multiply(itemCost.getPurchasePrice());
-            }
-            item.setPurchaseAmount(purchaseAmount != null ? purchaseAmount : BigDecimal.ZERO);
-
-            item.setPurchaseRemark(itemCost.getPurchaseRemark());
-            item.setSupplierId(itemCost.getSupplierId());
-            item.setTaxAmount(itemCost.getTaxAmount());
-
-            // 新增：设置付款日期和付款状态
-            item.setPaymentDate(itemCost.getPaymentDate());
-            item.setIsPaid(itemCost.getIsPaid());
-
-            // 计算毛利（销售金额 - 采购金额）
-            BigDecimal grossProfit = (item.getSaleAmount() != null ? item.getSaleAmount() : BigDecimal.ZERO)
-                    .subtract(item.getPurchaseAmount() != null ? item.getPurchaseAmount() : BigDecimal.ZERO);
-            item.setGrossProfit(grossProfit);
-
-            // 计算净利（毛利 - 税额）
-            BigDecimal taxAmount = item.getTaxAmount() != null ? item.getTaxAmount() : BigDecimal.ZERO;
-            item.setNetProfit(grossProfit.subtract(taxAmount));
-
-            // 更新明细
-            orderItemMapper.updateById(item);
-
-            // 累计汇总
-            totalPurchaseAmount = totalPurchaseAmount.add(item.getPurchaseAmount());
-            totalGrossProfit = totalGrossProfit.add(grossProfit);
-            totalTaxAmount = totalTaxAmount.add(taxAmount);
-            totalNetProfit = totalNetProfit.add(item.getNetProfit());
-
-            // 按供应商聚合采购金额（只有有供应商的明细才生成付款单）
-            if (itemCost.getSupplierId() != null && item.getPurchaseAmount().compareTo(BigDecimal.ZERO) > 0) {
-                SupplierPaymentInfo paymentInfo = supplierPaymentMap.computeIfAbsent(
-                        itemCost.getSupplierId(),
-                        k -> new SupplierPaymentInfo(itemCost.getPaymentDate(), itemCost.getIsPaid())
-                );
-                paymentInfo.addAmount(item.getPurchaseAmount());
-                paymentInfo.addRemark(itemCost.getPurchaseRemark()); // 聚合备注
-            }
-        }
-
-        // 6. 更新订单汇总信息
-        // 注意：paidAmount 是客户付给我们的钱，不是我们付给供应商的钱
-        // 填充成本时不修改 paidAmount，由"标注已付款"功能单独处理
-        OrderDO updateOrder = new OrderDO();
-        updateOrder.setId(order.getId());
-        updateOrder.setTotalPurchaseAmount(totalPurchaseAmount);
-        updateOrder.setTotalGrossProfit(totalGrossProfit);
-        updateOrder.setTotalTaxAmount(totalTaxAmount);
-        // 其他费用扣减净利
-        BigDecimal extraCost = fillReqVO.getExtraCost() != null ? fillReqVO.getExtraCost() : BigDecimal.ZERO;
-        updateOrder.setTotalNetProfit(totalNetProfit.subtract(extraCost));
-        updateOrder.setExtraCost(fillReqVO.getExtraCost());
-        updateOrder.setExtraCostRemark(fillReqVO.getExtraCostRemark());
-        // 不更新 paidAmount，保持原值
-        updateOrder.setCostFilled(true);
-        updateOrder.setCostFilledBy(SecurityFrameworkUtils.getLoginUserId());
-        updateOrder.setCostFilledTime(LocalDateTime.now());
-        updateOrder.setStatus(OrderStatusEnum.COMPLETED.getStatus()); // 填充成本后直接完成
-
-        orderMapper.updateById(updateOrder);
-
-        // 7. 为每个供应商创建付款单
-        for (Map.Entry<Long, SupplierPaymentInfo> entry : supplierPaymentMap.entrySet()) {
-            Long supplierId = entry.getKey();
-            SupplierPaymentInfo paymentInfo = entry.getValue();
-
-            // 创建付款单（单期，不使用供应商账期配置）
-            paymentService.createPaymentFromCostFill(
-                    supplierId,
-                    order.getId(),
-                    paymentInfo.getTotalAmount(),
-                    paymentInfo.getPaymentDate(),
-                    paymentInfo.getIsPaid(),
-                    paymentInfo.getRemark()  // 传入聚合后的备注
-            );
-        }
-    }
-
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public void editOrderCost(OrderCostFillReqVO editReqVO) {
-        // 1. 校验订单存在
-        OrderDO order = validateOrderExists(editReqVO.getOrderId());
-
-        // 2. 校验订单状态：只有已完成状态可以编辑成本
-        if (!OrderStatusEnum.COMPLETED.getStatus().equals(order.getStatus())) {
-            throw exception(ORDER_STATUS_NOT_ALLOW_EDIT_COST);
-        }
-
-        // 3. 校验成本是否已填充
-        if (!Boolean.TRUE.equals(order.getCostFilled())) {
-            throw exception(ORDER_COST_NOT_FILLED);
-        }
-
-        // 4. 校验供应商付款一致性（复用现有方法）
-        validateSupplierPaymentConsistency(editReqVO.getItems());
-
-        // 5. 获取订单明细
-        List<OrderItemDO> items = orderItemMapper.selectListByOrderId(order.getId());
-        Map<Long, OrderItemDO> itemMap = items.stream().collect(Collectors.toMap(OrderItemDO::getId, i -> i));
-
-        // 6. 更新明细成本信息（与fillOrderCost相同逻辑）
-        BigDecimal totalPurchaseAmount = BigDecimal.ZERO;
-        BigDecimal totalGrossProfit = BigDecimal.ZERO;
-        BigDecimal totalTaxAmount = BigDecimal.ZERO;
-        BigDecimal totalNetProfit = BigDecimal.ZERO;
-
-        // 按供应商分组聚合采购金额（用于后续同步付款单）
-        Map<Long, SupplierPaymentInfo> newSupplierPaymentMap = new HashMap<>();
-
         for (OrderCostFillReqVO.ItemCost itemCost : editReqVO.getItems()) {
             OrderItemDO item = itemMap.get(itemCost.getItemId());
             if (item == null) {
-                continue; // 跳过不存在的明细
+                continue;
             }
 
-            // 更新采购信息
             item.setPurchaseUnit(itemCost.getPurchaseUnit());
             item.setPurchaseQuantity(itemCost.getPurchaseQuantity());
             item.setPurchasePrice(itemCost.getPurchasePrice());
 
-            // 计算采购金额
             BigDecimal purchaseAmount = itemCost.getPurchaseAmount();
             if (purchaseAmount == null && itemCost.getPurchaseQuantity() != null && itemCost.getPurchasePrice() != null) {
-                purchaseAmount = itemCost.getPurchaseQuantity().multiply(itemCost.getPurchasePrice());
+                // 优先用重量计算，回退到数量（兼容旧数据）
+                BigDecimal weight = item.getWeight();
+                if (weight != null && weight.compareTo(BigDecimal.ZERO) > 0) {
+                    purchaseAmount = weight.multiply(itemCost.getPurchasePrice());
+                } else {
+                    purchaseAmount = itemCost.getPurchaseQuantity().multiply(itemCost.getPurchasePrice());
+                }
             }
             item.setPurchaseAmount(purchaseAmount != null ? purchaseAmount : BigDecimal.ZERO);
 
@@ -519,112 +564,65 @@ public class OrderServiceImpl implements OrderService {
             item.setSupplierId(itemCost.getSupplierId());
             item.setTaxAmount(itemCost.getTaxAmount());
 
-            // 设置付款日期和付款状态
-            item.setPaymentDate(itemCost.getPaymentDate());
-            item.setIsPaid(itemCost.getIsPaid());
-
-            // 计算毛利（销售金额 - 采购金额）
             BigDecimal grossProfit = (item.getSaleAmount() != null ? item.getSaleAmount() : BigDecimal.ZERO)
                     .subtract(item.getPurchaseAmount() != null ? item.getPurchaseAmount() : BigDecimal.ZERO);
             item.setGrossProfit(grossProfit);
 
-            // 计算净利（毛利 - 税额）
             BigDecimal taxAmount = item.getTaxAmount() != null ? item.getTaxAmount() : BigDecimal.ZERO;
             item.setNetProfit(grossProfit.subtract(taxAmount));
 
-            // 更新明细
             orderItemMapper.updateById(item);
 
-            // 累计汇总
             totalPurchaseAmount = totalPurchaseAmount.add(item.getPurchaseAmount());
             totalGrossProfit = totalGrossProfit.add(grossProfit);
             totalTaxAmount = totalTaxAmount.add(taxAmount);
             totalNetProfit = totalNetProfit.add(item.getNetProfit());
-
-            // 按供应商聚合采购金额（只有有供应商的明细才需要同步付款单）
-            if (itemCost.getSupplierId() != null && item.getPurchaseAmount().compareTo(BigDecimal.ZERO) > 0) {
-                SupplierPaymentInfo paymentInfo = newSupplierPaymentMap.computeIfAbsent(
-                        itemCost.getSupplierId(),
-                        k -> new SupplierPaymentInfo(itemCost.getPaymentDate(), itemCost.getIsPaid())
-                );
-                paymentInfo.addAmount(item.getPurchaseAmount());
-                paymentInfo.addRemark(itemCost.getPurchaseRemark());
-            }
         }
 
-        // 7. 更新订单汇总成本（不更新costFilled、costFilledBy、costFilledTime，保留首次填充信息）
-        // 注意：paidAmount 是客户付给我们的钱，不是我们付给供应商的钱
-        // 编辑成本时不修改 paidAmount，保持原值
+        // 6. 更新订单汇总成本
         OrderDO updateOrder = new OrderDO();
         updateOrder.setId(order.getId());
         updateOrder.setTotalPurchaseAmount(totalPurchaseAmount);
         updateOrder.setTotalGrossProfit(totalGrossProfit);
         updateOrder.setTotalTaxAmount(totalTaxAmount);
-        // 其他费用扣减净利
         BigDecimal extraCost = editReqVO.getExtraCost() != null ? editReqVO.getExtraCost() : BigDecimal.ZERO;
         updateOrder.setTotalNetProfit(totalNetProfit.subtract(extraCost));
         updateOrder.setExtraCost(editReqVO.getExtraCost());
         updateOrder.setExtraCostRemark(editReqVO.getExtraCostRemark());
-        // 不更新 paidAmount，保持原值
         orderMapper.updateById(updateOrder);
 
-        // 8. 付款单处理（区分已付款和未付款，保留审计记录）
-        Long orderId = order.getId();
-
-        // 8.1 获取现有付款单
-        List<PaymentDO> existingPayments = paymentMapper.selectListByOrderId(orderId);
-
-        for (PaymentDO payment : existingPayments) {
-            List<PaymentPlanDO> plans = paymentPlanMapper.selectListByPaymentId(payment.getId());
-
-            // 检查是否有已付款的计划
-            boolean hasPaidPlan = plans.stream()
-                    .anyMatch(p -> PaymentPlanStatusEnum.PAID.getStatus().equals(p.getStatus()));
-
-            if (hasPaidPlan) {
-                // 已付款 - 逻辑取消，保留审计记录
-                PaymentDO update = new PaymentDO();
-                update.setId(payment.getId());
-                update.setStatus(PaymentStatusEnum.CANCELLED.getStatus());
-                update.setRemark((payment.getRemark() != null ? payment.getRemark() + "；" : "")
-                        + "订单编辑成本时取消，原因：成本信息变更");
-                paymentMapper.updateById(update);
-
-                // 取消未付款的付款计划（不物理删除）
-                for (PaymentPlanDO plan : plans) {
-                    if (!PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
-                        PaymentPlanDO planUpdate = new PaymentPlanDO();
-                        planUpdate.setId(plan.getId());
-                        planUpdate.setStatus(PaymentPlanStatusEnum.CANCELLED.getStatus());
-                        paymentPlanMapper.updateById(planUpdate);
-                    }
+        // 构建详细日志
+        StringBuilder logDesc = new StringBuilder();
+        logDesc.append("编辑成本。");
+        Set<Long> supplierIds = items.stream()
+                .map(OrderItemDO::getSupplierId).filter(id -> id != null)
+                .collect(Collectors.toSet());
+        Map<Long, SupplierDO> supplierMap = supplierService.getSupplierMap(new ArrayList<>(supplierIds));
+        Map<Long, List<OrderItemDO>> supplierGrouped = items.stream()
+                .filter(i -> i.getSupplierId() != null && i.getPurchaseAmount() != null
+                        && i.getPurchaseAmount().compareTo(BigDecimal.ZERO) > 0)
+                .collect(Collectors.groupingBy(OrderItemDO::getSupplierId));
+        for (Map.Entry<Long, List<OrderItemDO>> entry : supplierGrouped.entrySet()) {
+            SupplierDO supplier = supplierMap.get(entry.getKey());
+            String supplierName = supplier != null ? supplier.getName() : "未知供应商";
+            logDesc.append("\n【").append(supplierName).append("】");
+            BigDecimal supplierTotal = BigDecimal.ZERO;
+            for (OrderItemDO i : entry.getValue()) {
+                logDesc.append(i.getProductName());
+                if (i.getSpec() != null && !i.getSpec().isEmpty()) {
+                    logDesc.append("(").append(i.getSpec()).append(")");
                 }
-            } else {
-                // 未付款 - 物理删除
-                List<Long> planIds = plans.stream().map(PaymentPlanDO::getId).collect(Collectors.toList());
-                if (!planIds.isEmpty()) {
-                    paymentPlanService.deleteNotificationsByPlanIds(planIds);
-                }
-                paymentPlanMapper.deleteByPaymentId(payment.getId());
-                paymentMapper.deleteById(payment.getId());
+                logDesc.append(" ×").append(i.getPurchaseQuantity())
+                        .append(" @").append(i.getPurchasePrice())
+                        .append("=").append(i.getPurchaseAmount()).append("；");
+                supplierTotal = supplierTotal.add(i.getPurchaseAmount());
             }
+            logDesc.append("小计：").append(supplierTotal);
         }
-
-        // 8.2 按新的供应商分组重新生成付款单（复用fillOrderCost的逻辑）
-        for (Map.Entry<Long, SupplierPaymentInfo> entry : newSupplierPaymentMap.entrySet()) {
-            Long supplierId = entry.getKey();
-            SupplierPaymentInfo paymentInfo = entry.getValue();
-
-            // 创建付款单（单期，不使用供应商账期配置）
-            paymentService.createPaymentFromCostFill(
-                    supplierId,
-                    orderId,
-                    paymentInfo.getTotalAmount(),
-                    paymentInfo.getPaymentDate(),
-                    paymentInfo.getIsPaid(),
-                    paymentInfo.getRemark()
-            );
-        }
+        logDesc.append("\n采购总额：").append(totalPurchaseAmount)
+                .append("，净利润：").append(updateOrder.getTotalNetProfit());
+        operationLogService.log("order", order.getId(), order.getOrderNo(),
+                "edit_cost", null, null, logDesc.toString());
     }
 
     @Override
@@ -633,8 +631,9 @@ public class OrderServiceImpl implements OrderService {
         // 1. 校验订单存在
         OrderDO order = validateOrderExists(editReqVO.getId());
 
-        // 2. 校验订单状态：必须是已完成状态
-        if (!OrderStatusEnum.COMPLETED.getStatus().equals(order.getStatus())) {
+        // 2. 校验订单状态：必须是已完成或结算中状态
+        if (!OrderStatusEnum.COMPLETED.getStatus().equals(order.getStatus())
+                && !OrderStatusEnum.SETTLING.getStatus().equals(order.getStatus())) {
             throw exception(ORDER_STATUS_NOT_ALLOW_EDIT_ITEMS);
         }
 
@@ -674,10 +673,10 @@ public class OrderServiceImpl implements OrderService {
             item.setId(null); // 清空ID，插入新记录
             item.setOrderId(order.getId());
 
-            // 计算销售金额
+            // 计算销售金额（重量×销售单价）
             BigDecimal saleAmount = itemVO.getSaleAmount();
             if (saleAmount == null || saleAmount.compareTo(BigDecimal.ZERO) == 0) {
-                saleAmount = (itemVO.getSaleQuantity() != null ? itemVO.getSaleQuantity() : BigDecimal.ZERO)
+                saleAmount = (itemVO.getWeight() != null ? itemVO.getWeight() : BigDecimal.ZERO)
                         .multiply(itemVO.getSalePrice() != null ? itemVO.getSalePrice() : BigDecimal.ZERO);
             }
             item.setSaleAmount(saleAmount);
@@ -685,7 +684,12 @@ public class OrderServiceImpl implements OrderService {
             // 计算采购金额（三层保护：前端传值 > 计算值 > 旧值 > 0）
             BigDecimal purchaseAmount = itemVO.getPurchaseAmount();
             if (purchaseAmount == null && itemVO.getPurchaseQuantity() != null && itemVO.getPurchasePrice() != null) {
-                purchaseAmount = itemVO.getPurchaseQuantity().multiply(itemVO.getPurchasePrice());
+                BigDecimal weight = itemVO.getWeight();
+                if (weight != null && weight.compareTo(BigDecimal.ZERO) > 0) {
+                    purchaseAmount = weight.multiply(itemVO.getPurchasePrice());
+                } else {
+                    purchaseAmount = itemVO.getPurchaseQuantity().multiply(itemVO.getPurchasePrice());
+                }
             }
             if (purchaseAmount == null && itemVO.getId() != null) {
                 OrderItemDO oldItem = oldItemMap.get(itemVO.getId());
@@ -836,6 +840,120 @@ public class OrderServiceImpl implements OrderService {
                     paymentInfo.getRemark()
             );
         }
+
+        operationLogService.log("order", order.getId(), order.getOrderNo(),
+                "edit_items", null, null,
+                "编辑商品明细，商品数：" + editReqVO.getItems().size()
+                        + "，销售总额：" + totalAmount + "，采购总额：" + totalPurchaseAmount);
+    }
+
+    @Override
+    public void editOrderItemsSimple(OrderSaveReqVO editReqVO) {
+        // 1. 校验订单存在
+        OrderDO order = validateOrderExists(editReqVO.getId());
+
+        // 2. 校验订单状态：进行中/结算中/已完成可编辑
+        Integer status = order.getStatus();
+        if (!OrderStatusEnum.CONFIRMED.getStatus().equals(status)
+                && !OrderStatusEnum.SETTLING.getStatus().equals(status)
+                && !OrderStatusEnum.COMPLETED.getStatus().equals(status)) {
+            throw exception(ORDER_STATUS_NOT_ALLOW_EDIT_ITEMS);
+        }
+
+        // 3. 校验商品明细不能为空
+        if (CollUtil.isEmpty(editReqVO.getItems())) {
+            throw exception(ORDER_ITEMS_CANNOT_BE_EMPTY);
+        }
+
+        // 4. 建立旧明细映射，用于保留采购字段
+        List<OrderItemDO> oldItems = orderItemMapper.selectListByOrderId(order.getId());
+        Map<Long, OrderItemDO> oldItemMap = oldItems.stream()
+                .collect(Collectors.toMap(OrderItemDO::getId, i -> i, (a, b) -> a));
+
+        // 5. 删除旧明细，插入新明细
+        orderItemMapper.deleteByOrderId(order.getId());
+
+        BigDecimal totalQuantity = BigDecimal.ZERO;
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        BigDecimal totalPurchaseAmount = BigDecimal.ZERO;
+        BigDecimal totalGrossProfit = BigDecimal.ZERO;
+        BigDecimal totalTaxAmount = BigDecimal.ZERO;
+        BigDecimal totalNetProfit = BigDecimal.ZERO;
+
+        for (OrderItemSaveReqVO itemVO : editReqVO.getItems()) {
+            OrderItemDO item = BeanUtils.toBean(itemVO, OrderItemDO.class);
+            item.setId(null);
+            item.setOrderId(order.getId());
+
+            // 计算销售金额（重量×销售单价）
+            BigDecimal saleAmount = itemVO.getSaleAmount();
+            if (saleAmount == null || saleAmount.compareTo(BigDecimal.ZERO) == 0) {
+                saleAmount = (itemVO.getWeight() != null ? itemVO.getWeight() : BigDecimal.ZERO)
+                        .multiply(itemVO.getSalePrice() != null ? itemVO.getSalePrice() : BigDecimal.ZERO);
+            }
+            item.setSaleAmount(saleAmount);
+
+            // 保留采购字段：通过旧明细ID匹配
+            if (itemVO.getId() != null) {
+                OrderItemDO oldItem = oldItemMap.get(itemVO.getId());
+                if (oldItem != null) {
+                    if (item.getPurchasePrice() == null) item.setPurchasePrice(oldItem.getPurchasePrice());
+                    if (item.getPurchaseQuantity() == null) item.setPurchaseQuantity(oldItem.getPurchaseQuantity());
+                    if (item.getPurchaseAmount() == null) item.setPurchaseAmount(oldItem.getPurchaseAmount());
+                    if (item.getPurchaseUnit() == null) item.setPurchaseUnit(oldItem.getPurchaseUnit());
+                    if (item.getSupplierId() == null) item.setSupplierId(oldItem.getSupplierId());
+                    if (item.getTaxAmount() == null) item.setTaxAmount(oldItem.getTaxAmount());
+                    if (item.getPurchaseRemark() == null) item.setPurchaseRemark(oldItem.getPurchaseRemark());
+                }
+            }
+
+            // 采购金额兜底
+            BigDecimal purchaseAmount = item.getPurchaseAmount() != null ? item.getPurchaseAmount() : BigDecimal.ZERO;
+            item.setPurchaseAmount(purchaseAmount);
+            BigDecimal taxAmount = item.getTaxAmount() != null ? item.getTaxAmount() : BigDecimal.ZERO;
+            item.setTaxAmount(taxAmount);
+
+            // 计算毛利和净利
+            BigDecimal grossProfit = saleAmount.subtract(purchaseAmount);
+            item.setGrossProfit(grossProfit);
+            item.setNetProfit(grossProfit.subtract(taxAmount));
+
+            orderItemMapper.insert(item);
+
+            // 累计汇总
+            totalQuantity = totalQuantity.add(itemVO.getSaleQuantity() != null ? itemVO.getSaleQuantity() : BigDecimal.ZERO);
+            totalAmount = totalAmount.add(saleAmount);
+            totalPurchaseAmount = totalPurchaseAmount.add(purchaseAmount);
+            totalGrossProfit = totalGrossProfit.add(grossProfit);
+            totalTaxAmount = totalTaxAmount.add(taxAmount);
+            totalNetProfit = totalNetProfit.add(item.getNetProfit());
+        }
+
+        // 6. 更新订单汇总
+        BigDecimal shippingFee = editReqVO.getShippingFee() != null ? editReqVO.getShippingFee()
+                : (order.getShippingFee() != null ? order.getShippingFee() : BigDecimal.ZERO);
+        BigDecimal discountAmount = editReqVO.getDiscountAmount() != null ? editReqVO.getDiscountAmount()
+                : (order.getDiscountAmount() != null ? order.getDiscountAmount() : BigDecimal.ZERO);
+        BigDecimal extraCostVal = order.getExtraCost() != null ? order.getExtraCost() : BigDecimal.ZERO;
+
+        OrderDO updateOrder = new OrderDO();
+        updateOrder.setId(order.getId());
+        updateOrder.setTotalQuantity(totalQuantity);
+        updateOrder.setTotalAmount(totalAmount);
+        updateOrder.setShippingFee(shippingFee);
+        updateOrder.setDiscountAmount(discountAmount);
+        updateOrder.setPayableAmount(totalAmount.add(shippingFee).subtract(discountAmount));
+        updateOrder.setTotalPurchaseAmount(totalPurchaseAmount);
+        updateOrder.setTotalGrossProfit(totalGrossProfit);
+        updateOrder.setTotalTaxAmount(totalTaxAmount);
+        updateOrder.setTotalNetProfit(totalNetProfit.subtract(extraCostVal));
+        orderMapper.updateById(updateOrder);
+
+        // 7. 记录操作日志
+        operationLogService.log("order", order.getId(), order.getOrderNo(),
+                "edit_items_simple", null, null,
+                "编辑商品明细（简单模式），商品数：" + editReqVO.getItems().size()
+                        + "，销售总额：" + totalAmount);
     }
 
     /**
@@ -862,48 +980,6 @@ public class OrderServiceImpl implements OrderService {
             // 检查其他商品是否一致
             for (int i = 1; i < supplierItems.size(); i++) {
                 OrderItemSaveReqVO item = supplierItems.get(i);
-                LocalDate itemPaymentDate = item.getPaymentDate();
-                Boolean itemIsPaid = item.getIsPaid();
-
-                // 比较付款日期
-                boolean dateMatch = (basePaymentDate == null && itemPaymentDate == null)
-                        || (basePaymentDate != null && basePaymentDate.equals(itemPaymentDate));
-
-                // 比较付款状态
-                boolean paidMatch = (baseIsPaid == null && itemIsPaid == null)
-                        || (baseIsPaid != null && baseIsPaid.equals(itemIsPaid));
-
-                if (!dateMatch || !paidMatch) {
-                    throw exception(ORDER_SUPPLIER_PAYMENT_INCONSISTENT);
-                }
-            }
-        }
-    }
-
-    /**
-     * 校验同供应商的付款日期和付款状态一致性
-     * 同一供应商的所有商品必须有相同的付款日期和付款状态
-     */
-    private void validateSupplierPaymentConsistency(List<OrderCostFillReqVO.ItemCost> items) {
-        // 按供应商分组
-        Map<Long, List<OrderCostFillReqVO.ItemCost>> supplierItemsMap = items.stream()
-                .filter(item -> item.getSupplierId() != null)
-                .collect(Collectors.groupingBy(OrderCostFillReqVO.ItemCost::getSupplierId));
-
-        // 检查每个供应商组内的一致性
-        for (Map.Entry<Long, List<OrderCostFillReqVO.ItemCost>> entry : supplierItemsMap.entrySet()) {
-            List<OrderCostFillReqVO.ItemCost> supplierItems = entry.getValue();
-            if (supplierItems.size() <= 1) {
-                continue; // 只有一个商品，无需校验
-            }
-
-            // 取第一个商品的付款日期和状态作为基准
-            LocalDate basePaymentDate = supplierItems.get(0).getPaymentDate();
-            Boolean baseIsPaid = supplierItems.get(0).getIsPaid();
-
-            // 检查其他商品是否一致
-            for (int i = 1; i < supplierItems.size(); i++) {
-                OrderCostFillReqVO.ItemCost item = supplierItems.get(i);
                 LocalDate itemPaymentDate = item.getPaymentDate();
                 Boolean itemIsPaid = item.getIsPaid();
 
@@ -968,39 +1044,41 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public void approveOrder(Long id) {
-        // 校验订单存在
+        // 提交订单（草稿 → 已确认），无需审批
         OrderDO order = validateOrderExists(id);
 
-        // 校验订单状态（只有待审核状态可以审核）
-        if (!OrderStatusEnum.PENDING_REVIEW.getStatus().equals(order.getStatus())) {
+        if (!OrderStatusEnum.DRAFT.getStatus().equals(order.getStatus())) {
             throw exception(ORDER_STATUS_INVALID_TRANSITION);
         }
 
-        // 更新状态为待填充成本
         OrderDO updateObj = new OrderDO();
         updateObj.setId(id);
-        updateObj.setStatus(OrderStatusEnum.PENDING_COST.getStatus());
+        updateObj.setStatus(OrderStatusEnum.CONFIRMED.getStatus());
         orderMapper.updateById(updateObj);
+
+        operationLogService.log("order", id, order.getOrderNo(),
+                "submit", null, null, "提交订单");
     }
 
     @Override
     public void rejectOrder(Long id, String reason) {
-        // 校验订单存在
+        // 取消订单（进行中 → 已取消）
         OrderDO order = validateOrderExists(id);
 
-        // 校验订单状态（只有待审核状态可以拒绝）
-        if (!OrderStatusEnum.PENDING_REVIEW.getStatus().equals(order.getStatus())) {
+        if (!OrderStatusEnum.CONFIRMED.getStatus().equals(order.getStatus())) {
             throw exception(ORDER_STATUS_INVALID_TRANSITION);
         }
 
-        // 更新状态为已取消，备注填入拒绝原因
         OrderDO updateObj = new OrderDO();
         updateObj.setId(id);
         updateObj.setStatus(OrderStatusEnum.CANCELLED.getStatus());
         if (reason != null && !reason.isEmpty()) {
-            updateObj.setRemark((order.getRemark() != null ? order.getRemark() + "；" : "") + "拒绝原因：" + reason);
+            updateObj.setRemark((order.getRemark() != null ? order.getRemark() + "；" : "") + "取消原因：" + reason);
         }
         orderMapper.updateById(updateObj);
+
+        operationLogService.log("order", id, order.getOrderNo(),
+                "cancel", null, null, "取消订单" + (reason != null ? "：" + reason : ""));
     }
 
     // ========== 私有方法 ==========
@@ -1049,12 +1127,12 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * 判断订单是否为被驳回状态（已取消 + 有拒绝原因）
+     * 判断订单是否为被取消状态（已取消 + 有取消原因）
      */
     private boolean isRejectedOrder(OrderDO order) {
         return OrderStatusEnum.CANCELLED.getStatus().equals(order.getStatus())
                 && order.getRemark() != null
-                && order.getRemark().contains("拒绝原因");
+                && (order.getRemark().contains("取消原因") || order.getRemark().contains("拒绝原因"));
     }
 
     // ========== 打印导出相关 ==========
@@ -1063,211 +1141,554 @@ public class OrderServiceImpl implements OrderService {
     public void generatePrintExcel(OrderDO order, CustomerDO customer,
                                    List<OrderItemDO> items, String salesmanName,
                                    HttpServletResponse response) throws IOException {
+        // 如果是副订单，调用B角色送货单方法
+        if (order.getOrderCategory() != null && order.getOrderCategory() == 1) {
+            generateSubOrderPrintExcel(order, items, response);
+            return;
+        }
 
+        // ===== A角色 发货单（销售单及欠款协议） =====
         // 1. 准备数据
         String customerName = customer != null ? customer.getName() : "";
-        String contact = customer != null ? customer.getContact() : "";
-        String mobile = customer != null ? customer.getMobile() : "";
+        String vehicleNo = order.getVehicleNo() != null ? order.getVehicleNo() : "";
 
-        // 2. 判断付款状态
-        String paymentStatus = getPaymentStatusText(order);
-
-        // 3. 创建工作簿
+        // 2. 创建工作簿
         Workbook workbook = new XSSFWorkbook();
-        Sheet sheet = workbook.createSheet("销售清单");
+        Sheet sheet = workbook.createSheet("发货单");
 
-        // 4. 设置列宽（精确还原模板，单位：1/256字符宽度）
-        sheet.setColumnWidth(0, (int)(12.30 * 256));  // A列：名称 - 12.30字符
-        sheet.setColumnWidth(1, (int)(18.80 * 256));  // B列：规格 - 18.80字符
-        sheet.setColumnWidth(2, (int)(9.40 * 256));   // C列：单位 - 9.40字符
-        sheet.setColumnWidth(3, (int)(12.30 * 256));  // D列：数量 - 12.30字符
-        sheet.setColumnWidth(4, (int)(11.80 * 256));  // E列：价格 - 11.80字符
-        sheet.setColumnWidth(5, (int)(12.10 * 256));  // F列：总价 - 12.10字符
-        sheet.setColumnWidth(6, (int)(18.00 * 256));  // G列：备注 - 18.00字符（单号更长）
+        // 3. 设置列宽（11列：序号|产品名称|材质|规格|计价单位|数量|重量|销售单价|销售金额|品牌|备注）
+        sheet.setColumnWidth(0, (int)(5.0 * 256));    // A：序号
+        sheet.setColumnWidth(1, (int)(16.0 * 256));   // B：产品名称
+        sheet.setColumnWidth(2, (int)(8.0 * 256));    // C：材质
+        sheet.setColumnWidth(3, (int)(14.0 * 256));   // D：规格
+        sheet.setColumnWidth(4, (int)(8.0 * 256));    // E：计价单位
+        sheet.setColumnWidth(5, (int)(7.0 * 256));    // F：数量
+        sheet.setColumnWidth(6, (int)(9.0 * 256));    // G：重量
+        sheet.setColumnWidth(7, (int)(11.0 * 256));   // H：销售单价
+        sheet.setColumnWidth(8, (int)(12.0 * 256));   // I：销售金额
+        sheet.setColumnWidth(9, (int)(7.0 * 256));    // J：品牌
+        sheet.setColumnWidth(10, (int)(18.0 * 256));  // K：备注
 
-        // 5. 创建样式
-        CellStyle companyStyleCenter = createCenterTextStyle(workbook, 20);  // 公司名样式（20磅，居中，不加粗）
-        CellStyle titleStyle14 = createTextStyle(workbook, 14);              // 销售清单、客户信息样式（14磅，不加粗）
-        CellStyle headerStyle = createHeaderStyle(workbook);                  // 表头样式（12磅，居中不加粗带边框）
-        CellStyle dataCenterStyle = createDataCenterBorderStyle(workbook);    // 数据居中+边框
-        CellStyle normalStyle = createTextStyle(workbook, 12);                // 普通文本样式（12磅，不加粗）
-        CellStyle wrapStyle = createWrapTextStyle(workbook, 14);              // 换行文本样式（14磅，不加粗）
-        CellStyle totalBorderStyle = createDataCenterBorderStyle(workbook);   // 合计行样式（12磅，不加粗，居中，完整边框）
+        // 4. 创建样式
+        CellStyle titleStyle = createCenterTextStyle(workbook, 18);       // 中文标题
+        CellStyle subtitleStyle = createCenterTextStyle(workbook, 12);    // 英文副标题
+        CellStyle infoStyleLeft = createTextStyleLeft(workbook, 11);      // 信息行左对齐
+        CellStyle infoStyleRight = createTextStyleRight(workbook, 11);    // 信息行右对齐
+        CellStyle headerStyle = createHeaderStyle(workbook);              // 表头
+        CellStyle dataCenterStyle = createDataCenterBorderStyle(workbook);// 数据居中+边框
+        CellStyle totalBorderStyle = createDataCenterBorderStyle(workbook);
+        CellStyle normalStyleLeft = createTextStyleLeft(workbook, 10);    // 条款文本
+        CellStyle normalStyle = createTextStyle(workbook, 11);
 
         int rowIndex = 0;
 
-        // 6. 第1-2行：公司名称、销售清单、单号（垂直合并，行高20.40磅）
-        Row titleRow1 = sheet.createRow(rowIndex++);
-        Row titleRow2 = sheet.createRow(rowIndex++);
-        titleRow1.setHeightInPoints(20.4f);
-        titleRow2.setHeightInPoints(20.4f);
+        // 5. 第1行：中文标题
+        Row titleRow = sheet.createRow(rowIndex++);
+        titleRow.setHeightInPoints(30f);
+        Cell titleCell = titleRow.createCell(0);
+        titleCell.setCellValue("四川鸿恒盛供应链管理有限公司销售单及欠款协议（代合同）");
+        CellStyle titleBoldStyle = createCenterTextStyle(workbook, 18);
+        Font titleFont = workbook.createFont();
+        titleFont.setFontName("宋体");
+        titleFont.setFontHeightInPoints((short) 18);
+        titleFont.setBold(true);
+        titleBoldStyle.setFont(titleFont);
+        titleCell.setCellStyle(titleBoldStyle);
+        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, 10));
 
-        // A-F列（第1-2行垂直合并）：公司名称（20磅）+ 销售清单（14磅），居中
-        Cell companyCell = titleRow1.createCell(0);
+        // 6. 第2行：英文副标题
+        Row subtitleRow = sheet.createRow(rowIndex++);
+        subtitleRow.setHeightInPoints(22f);
+        Cell subtitleCell = subtitleRow.createCell(0);
+        subtitleCell.setCellValue("Sichuan Honghengsheng Supply Chain Management Co. Ltd");
+        subtitleCell.setCellStyle(subtitleStyle);
+        sheet.addMergedRegion(new CellRangeAddress(1, 1, 0, 10));
 
-        // 创建富文本，支持不同字号
-        XSSFRichTextString richText = new XSSFRichTextString("成都尚泰铭成贸易有限公司  销售清单");
+        // 7. 第3行：客户名称（左） + 提货车号（右）
+        Row infoRow = sheet.createRow(rowIndex++);
+        infoRow.setHeightInPoints(20f);
+        Cell customerCell = infoRow.createCell(0);
+        customerCell.setCellValue("客户名称：" + customerName);
+        customerCell.setCellStyle(infoStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(2, 2, 0, 5));
 
-        // 第一段：公司名称（20磅）
-        Font font20 = workbook.createFont();
-        font20.setFontName("宋体");
-        font20.setFontHeightInPoints((short) 20);
-        font20.setBold(false);
-        richText.applyFont(0, 12, font20); // "成都尚泰铭成贸易有限公司"12个字
+        Cell vehicleCell = infoRow.createCell(6);
+        vehicleCell.setCellValue("提货车号：" + vehicleNo);
+        vehicleCell.setCellStyle(infoStyleRight);
+        sheet.addMergedRegion(new CellRangeAddress(2, 2, 6, 10));
 
-        // 第二段：销售清单（14磅）
-        Font font14 = workbook.createFont();
-        font14.setFontName("宋体");
-        font14.setFontHeightInPoints((short) 14);
-        font14.setBold(false);
-        richText.applyFont(14, 18, font14); // "销售清单"4个字（从索引14开始，因为有两个空格）
-
-        companyCell.setCellValue(richText);
-        companyCell.setCellStyle(companyStyleCenter);
-        sheet.addMergedRegion(new CellRangeAddress(0, 1, 0, 5)); // 第1-2行，A-F列
-
-        // G列（第1-2行垂直合并）：单号（14磅，换行，居中）
-        Cell orderNoCell = titleRow1.createCell(6);
-        orderNoCell.setCellValue("单号\n" + order.getOrderNo());
-        orderNoCell.setCellStyle(wrapStyle);
-        sheet.addMergedRegion(new CellRangeAddress(0, 1, 6, 6)); // 第1-2行，G列
-
-        // 7. 第3-4行：收货单位、收货人（垂直合并，行高20.40磅）
-        Row infoRow1 = sheet.createRow(rowIndex++);
-        Row infoRow2 = sheet.createRow(rowIndex++);
-        infoRow1.setHeightInPoints(20.4f);
-        infoRow2.setHeightInPoints(20.4f);
-
-        // A-D列（第3-4行垂直合并）：收货单位（14磅）
-        Cell unitCell = infoRow1.createCell(0);
-        unitCell.setCellValue("收货单位：" + customerName);
-        unitCell.setCellStyle(titleStyle14);
-        sheet.addMergedRegion(new CellRangeAddress(2, 3, 0, 3)); // 第3-4行，A-D列
-
-        // E-G列（第3-4行垂直合并）：收货人+联系电话（换行，14磅）
-        Cell contactCell = infoRow1.createCell(4);
-        contactCell.setCellValue("收货人：" + contact + " 联系电话：\n" + mobile);
-        contactCell.setCellStyle(wrapStyle);
-        sheet.addMergedRegion(new CellRangeAddress(2, 3, 4, 6)); // 第3-4行，E-G列
-
-        // 8. 第5行：表头（行高20.40磅）
+        // 8. 表头行
         Row headerRow = sheet.createRow(rowIndex++);
-        headerRow.setHeightInPoints(20.4f);
-        String[] headers = {"名称", "规格", "单位", "数量", "价格", "总价", "备注"};
+        headerRow.setHeightInPoints(22f);
+        String[] headers = {"序号", "产品名称", "材质", "规 格", "计价单位", "数量", "重量", "销售单价", "销售金额", "品牌", "备 注"};
         for (int i = 0; i < headers.length; i++) {
             Cell cell = headerRow.createCell(i);
             cell.setCellValue(headers[i]);
             cell.setCellStyle(headerStyle);
         }
 
-        // 11. 第6-N行：产品明细（每行高度20.40磅，田字格边框）
+        // 9. 产品明细行
         BigDecimal totalSaleAmount = BigDecimal.ZERO;
+        BigDecimal totalWeight = BigDecimal.ZERO;
+        int seq = 1;
         for (OrderItemDO item : items) {
             Row dataRow = sheet.createRow(rowIndex++);
-            dataRow.setHeightInPoints(20.4f);  // 设置行高
+            dataRow.setHeightInPoints(20f);
 
-            // A列：名称
-            Cell nameCell = dataRow.createCell(0);
+            // 序号
+            Cell seqCell = dataRow.createCell(0);
+            seqCell.setCellValue(seq++);
+            seqCell.setCellStyle(dataCenterStyle);
+
+            // 产品名称
+            Cell nameCell = dataRow.createCell(1);
             nameCell.setCellValue(item.getProductName() != null ? item.getProductName() : "");
             nameCell.setCellStyle(dataCenterStyle);
 
-            // B列：规格
-            Cell specCell = dataRow.createCell(1);
+            // 材质
+            Cell materialCell = dataRow.createCell(2);
+            materialCell.setCellValue(item.getMaterial() != null ? item.getMaterial() : "");
+            materialCell.setCellStyle(dataCenterStyle);
+
+            // 规格
+            Cell specCell = dataRow.createCell(3);
             specCell.setCellValue(item.getSpec() != null ? item.getSpec() : "");
             specCell.setCellStyle(dataCenterStyle);
 
-            // C列：单位
-            Cell unitCellItem = dataRow.createCell(2);
-            unitCellItem.setCellValue(item.getSaleUnit() != null ? item.getSaleUnit() : "");
-            unitCellItem.setCellStyle(dataCenterStyle);
+            // 计价单位
+            Cell unitCell = dataRow.createCell(4);
+            unitCell.setCellValue(item.getSaleUnit() != null ? item.getSaleUnit() : "");
+            unitCell.setCellStyle(dataCenterStyle);
 
-            // D列：数量
-            Cell qtyCell = dataRow.createCell(3);
+            // 数量
+            Cell qtyCell = dataRow.createCell(5);
             if (item.getSaleQuantity() != null) {
                 qtyCell.setCellValue(item.getSaleQuantity().doubleValue());
             }
             qtyCell.setCellStyle(dataCenterStyle);
 
-            // E列：价格
-            Cell priceCell = dataRow.createCell(4);
+            // 重量
+            Cell weightCell = dataRow.createCell(6);
+            if (item.getWeight() != null) {
+                weightCell.setCellValue(item.getWeight().doubleValue());
+                totalWeight = totalWeight.add(item.getWeight());
+            }
+            weightCell.setCellStyle(dataCenterStyle);
+
+            // 销售单价
+            Cell priceCell = dataRow.createCell(7);
             if (item.getSalePrice() != null) {
                 priceCell.setCellValue(item.getSalePrice().doubleValue());
             }
             priceCell.setCellStyle(dataCenterStyle);
 
-            // F列：总价
-            Cell amountCell = dataRow.createCell(5);
+            // 销售金额
+            Cell amountCell = dataRow.createCell(8);
             if (item.getSaleAmount() != null) {
                 amountCell.setCellValue(item.getSaleAmount().doubleValue());
                 totalSaleAmount = totalSaleAmount.add(item.getSaleAmount());
             }
             amountCell.setCellStyle(dataCenterStyle);
 
-            // G列：备注
-            Cell remarkItemCell = dataRow.createCell(6);
-            remarkItemCell.setCellValue(item.getSaleRemark() != null ? item.getSaleRemark() : "");
-            remarkItemCell.setCellStyle(dataCenterStyle);
+            // 品牌
+            Cell brandCell = dataRow.createCell(9);
+            brandCell.setCellValue(item.getBrand() != null ? item.getBrand() : "");
+            brandCell.setCellStyle(dataCenterStyle);
+
+            // 备注
+            Cell remarkCell = dataRow.createCell(10);
+            remarkCell.setCellValue(item.getSaleRemark() != null ? item.getSaleRemark() : "");
+            remarkCell.setCellStyle(dataCenterStyle);
         }
 
-        // 12. 合计行：A-D列合并（金额大写），E-F-G列独立（合计、金额、付款状态）
-        String amountChinese = MoneyUtils.toChineseAmount(totalSaleAmount);
+        // 10. 合计行
         Row totalRow = sheet.createRow(rowIndex++);
-        totalRow.setHeightInPoints(20.4f);  // 设置行高
+        totalRow.setHeightInPoints(20f);
 
-        // A-D列：金额（大写）：XXX（合并，12磅不加粗，居中，完整边框）
-        Cell amountChineseCell = totalRow.createCell(0);
-        amountChineseCell.setCellValue("金额（大写）：" + amountChinese);
-        amountChineseCell.setCellStyle(totalBorderStyle);
-
-        // 为B C D列创建空单元格并设置边框样式（确保合并后边框完整）
-        Cell bCell = totalRow.createCell(1);
-        bCell.setCellStyle(totalBorderStyle);
-        Cell cCell = totalRow.createCell(2);
-        cCell.setCellStyle(totalBorderStyle);
-        Cell dCell = totalRow.createCell(3);
-        dCell.setCellStyle(totalBorderStyle);
-
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 3));  // A-D合并
-
-        // E列：合计（12磅不加粗，居中，完整边框）
-        Cell totalLabelCell = totalRow.createCell(4);
-        totalLabelCell.setCellValue("合计");
+        // 合计：标签 (A-B合并)
+        Cell totalLabelCell = totalRow.createCell(0);
+        totalLabelCell.setCellValue("合计：");
         totalLabelCell.setCellStyle(totalBorderStyle);
+        Cell totalB = totalRow.createCell(1);
+        totalB.setCellStyle(totalBorderStyle);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 1));
 
-        // F列：总金额（12磅不加粗，居中，完整边框）
-        Cell totalAmountCell = totalRow.createCell(5);
+        // 材质 "--"
+        Cell totalC = totalRow.createCell(2);
+        totalC.setCellValue("--");
+        totalC.setCellStyle(totalBorderStyle);
+
+        // 规格 "--"
+        Cell totalD = totalRow.createCell(3);
+        totalD.setCellValue("--");
+        totalD.setCellStyle(totalBorderStyle);
+
+        // 计价单位（空）
+        Cell totalE = totalRow.createCell(4);
+        totalE.setCellStyle(totalBorderStyle);
+
+        // 数量（空）
+        Cell totalF = totalRow.createCell(5);
+        totalF.setCellStyle(totalBorderStyle);
+
+        // 重量合计
+        Cell totalWeightCell = totalRow.createCell(6);
+        totalWeightCell.setCellValue(totalWeight.doubleValue());
+        totalWeightCell.setCellStyle(totalBorderStyle);
+
+        // 销售单价（空）
+        Cell totalH = totalRow.createCell(7);
+        totalH.setCellStyle(totalBorderStyle);
+
+        // 销售金额合计
+        Cell totalAmountCell = totalRow.createCell(8);
         totalAmountCell.setCellValue(totalSaleAmount.doubleValue());
         totalAmountCell.setCellStyle(totalBorderStyle);
 
-        // G列：付款状态（12磅不加粗，居中，完整边框）
-        Cell paymentStatusCell = totalRow.createCell(6);
-        paymentStatusCell.setCellValue(paymentStatus);
-        paymentStatusCell.setCellStyle(totalBorderStyle);
+        // 品牌（空）
+        Cell totalJ = totalRow.createCell(9);
+        totalJ.setCellStyle(totalBorderStyle);
 
-        // 13. 空行（默认行高）
+        // 备注（空）
+        Cell totalK = totalRow.createCell(10);
+        totalK.setCellStyle(totalBorderStyle);
+
+        // 11. 合计金额（大写）行
+        String amountChinese = MoneyUtils.toChineseAmount(totalSaleAmount);
+        Row amountRow = sheet.createRow(rowIndex++);
+        amountRow.setHeightInPoints(22f);
+
+        Cell amountLabelCell = amountRow.createCell(0);
+        amountLabelCell.setCellValue("合计金额（大写）：");
+        amountLabelCell.setCellStyle(totalBorderStyle);
+        for (int i = 1; i <= 5; i++) {
+            Cell c = amountRow.createCell(i);
+            c.setCellStyle(totalBorderStyle);
+        }
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 5));
+
+        Cell amountChineseCell = amountRow.createCell(6);
+        amountChineseCell.setCellValue(amountChinese);
+        amountChineseCell.setCellStyle(totalBorderStyle);
+        for (int i = 7; i <= 10; i++) {
+            Cell c = amountRow.createCell(i);
+            c.setCellStyle(totalBorderStyle);
+        }
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
+
+        // 12. 条款（4条）
+        String[] terms = {
+            "一、凡在我公司购货的欠款用户，无论自提，委托供方代运，所欠货款按以下协议执行：",
+            "二、需方所欠供方货款，必须按供方指定的时间即   年  月  日前付清。如果到期未付清欠款，则供方按每日欠款的0.1%加收需方滞纳金。如不能协商解决的，由供方所在地金牛区法院解决；",
+            "三、需方购货收到货品3日内对质量提出异议，未提出，视为合格。如异议参照钢厂处理意见协商解决。",
+            "四、本协议一式叁份，需方留底一份。收货单位签收人签字后生效，具有法律效力。"
+        };
+        for (String term : terms) {
+            Row termRow = sheet.createRow(rowIndex++);
+            termRow.setHeightInPoints(16f);
+            Cell termCell = termRow.createCell(0);
+            termCell.setCellValue(term);
+            termCell.setCellStyle(normalStyleLeft);
+            sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
+        }
+
+        // 13. 地址+电话行
+        Row addrRow = sheet.createRow(rowIndex++);
+        addrRow.setHeightInPoints(16f);
+        Cell addrCell = addrRow.createCell(0);
+        addrCell.setCellValue("地址：成都市金牛区量力钢材城B座1909   电话：19302852518");
+        addrCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
+
+        // 14. 空行
         sheet.createRow(rowIndex++);
 
-        // 14. 日期行（合并D-G列）
-        Row dateRow = sheet.createRow(rowIndex++);
-        dateRow.setHeightInPoints(20.4f);
-        String dateText = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy年M月d号"));
-        Cell dateCell = dateRow.createCell(3);  // D列开始
-        dateCell.setCellValue("日期：" + dateText);
-        dateCell.setCellStyle(normalStyle);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 3, 6));  // D-G合并
+        // 15. 送货单位及经手人 | 签收单位及经手人
+        Row signRow1 = sheet.createRow(rowIndex++);
+        signRow1.setHeightInPoints(20f);
+        Cell sendCell = signRow1.createCell(0);
+        sendCell.setCellValue("送货单位及经手人（盖章）：四川鸿恒盛供应链管理有限公司");
+        sendCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 5));
 
-        // 15. 签收人行（合并E-F列）
-        Row signRow = sheet.createRow(rowIndex);
-        signRow.setHeightInPoints(20.4f);
-        Cell signCell = signRow.createCell(4);  // E列开始
-        signCell.setCellValue("签收人：");
-        signCell.setCellStyle(normalStyle);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex, rowIndex, 4, 5));  // E-F合并
+        Cell recvCell = signRow1.createCell(6);
+        recvCell.setCellValue("签收单位及经手人（盖章）：");
+        recvCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
+
+        // 16. 送货时间 | 签收时间
+        Row signRow2 = sheet.createRow(rowIndex++);
+        signRow2.setHeightInPoints(20f);
+        String dateText = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-M-d"));
+        Cell sendDateCell = signRow2.createCell(0);
+        sendDateCell.setCellValue("送货时间：" + dateText);
+        sendDateCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 5));
+
+        Cell recvDateCell = signRow2.createCell(6);
+        recvDateCell.setCellValue("签收时间：");
+        recvDateCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
 
         // 17. 设置响应头并输出
-        // 文件名格式：尚泰铭成销售清单-{客户名称}-{年月日}.xlsx
         String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        String filename = "尚泰铭成销售清单-" + customerName + "-" + dateStr + ".xlsx";
+        String filename = "鸿恒盛发货单-" + customerName + "-" + dateStr + ".xlsx";
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setCharacterEncoding("UTF-8");
+        response.setHeader("Content-Disposition",
+            "attachment;filename=" + URLEncoder.encode(filename, "UTF-8"));
+
+        workbook.write(response.getOutputStream());
+        workbook.close();
+    }
+
+    /**
+     * B角色 送货清单导出（熙汇达鑫模板）
+     * 11列：序号|产品名称|规格|材质|数量/根/张|长度/米|重量/吨|厂家|卸货位置|总米数|车号
+     */
+    private void generateSubOrderPrintExcel(OrderDO order, List<OrderItemDO> items,
+                                             HttpServletResponse response) throws IOException {
+        // 1. 准备数据
+        String receivingUnit = order.getReceivingUnit() != null ? order.getReceivingUnit() : "";
+        String projectName = "";
+        if (order.getProjectId() != null) {
+            ProjectDO project = projectService.getProject(order.getProjectId());
+            if (project != null) {
+                projectName = project.getName() != null ? project.getName() : "";
+            }
+        }
+        String deliveryDate = "";
+        if (order.getOrderDate() != null) {
+            deliveryDate = order.getOrderDate().format(DateTimeFormatter.ofPattern("yyyy年M月d日"));
+        } else {
+            deliveryDate = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy年M月d日"));
+        }
+        String address = order.getAddress() != null ? order.getAddress() : "";
+
+        // 2. 创建工作簿
+        Workbook workbook = new XSSFWorkbook();
+        Sheet sheet = workbook.createSheet("送货清单");
+
+        // 3. 设置列宽（11列）
+        sheet.setColumnWidth(0, (int)(5.0 * 256));    // A：序号
+        sheet.setColumnWidth(1, (int)(16.0 * 256));   // B：产品名称
+        sheet.setColumnWidth(2, (int)(14.0 * 256));   // C：规格
+        sheet.setColumnWidth(3, (int)(8.0 * 256));    // D：材质
+        sheet.setColumnWidth(4, (int)(10.0 * 256));   // E：数量/根/张
+        sheet.setColumnWidth(5, (int)(9.0 * 256));    // F：长度/米
+        sheet.setColumnWidth(6, (int)(9.0 * 256));    // G：重量/吨
+        sheet.setColumnWidth(7, (int)(10.0 * 256));   // H：厂家
+        sheet.setColumnWidth(8, (int)(10.0 * 256));   // I：卸货位置
+        sheet.setColumnWidth(9, (int)(9.0 * 256));    // J：总米数
+        sheet.setColumnWidth(10, (int)(10.0 * 256));  // K：车号
+
+        // 4. 创建样式
+        CellStyle titleBoldStyle = createCenterTextStyle(workbook, 18);
+        Font bFont = workbook.createFont();
+        bFont.setFontName("宋体");
+        bFont.setFontHeightInPoints((short) 18);
+        bFont.setBold(true);
+        titleBoldStyle.setFont(bFont);
+
+        CellStyle infoStyleLeft = createTextStyleLeft(workbook, 11);
+        CellStyle headerStyle = createHeaderStyle(workbook);
+        CellStyle dataCenterStyle = createDataCenterBorderStyle(workbook);
+        CellStyle totalBorderStyle = createDataCenterBorderStyle(workbook);
+        CellStyle normalStyleLeft = createTextStyleLeft(workbook, 10);
+
+        int rowIndex = 0;
+
+        // 5. 第1行：标题
+        Row titleRow = sheet.createRow(rowIndex++);
+        titleRow.setHeightInPoints(32f);
+        Cell titleCell = titleRow.createCell(0);
+        titleCell.setCellValue("四川熙汇达鑫商贸有限公司  送货清单");
+        titleCell.setCellStyle(titleBoldStyle);
+        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, 10));
+
+        // 6. 第2行：收货单位 | 项目名称 | 送货日期
+        Row infoRow1 = sheet.createRow(rowIndex++);
+        infoRow1.setHeightInPoints(20f);
+
+        Cell ruCell = infoRow1.createCell(0);
+        ruCell.setCellValue("收货单位：" + receivingUnit);
+        ruCell.setCellStyle(infoStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(1, 1, 0, 3));
+
+        Cell pnCell = infoRow1.createCell(4);
+        pnCell.setCellValue("项目名称：" + projectName);
+        pnCell.setCellStyle(infoStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(1, 1, 4, 7));
+
+        Cell ddCell = infoRow1.createCell(8);
+        ddCell.setCellValue("送货日期：" + deliveryDate);
+        ddCell.setCellStyle(infoStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(1, 1, 8, 10));
+
+        // 7. 第3行：送货地址
+        Row infoRow2 = sheet.createRow(rowIndex++);
+        infoRow2.setHeightInPoints(20f);
+        Cell addrCell = infoRow2.createCell(0);
+        addrCell.setCellValue("送货地址：" + address);
+        addrCell.setCellStyle(infoStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(2, 2, 0, 10));
+
+        // 8. 表头行
+        Row headerRow = sheet.createRow(rowIndex++);
+        headerRow.setHeightInPoints(22f);
+        String[] headers = {"序号", "产品名称", "规格", "材质", "数量/根/张", "长度/米", "重量/吨", "厂家", "卸货位置", "总米数", "车号"};
+        for (int i = 0; i < headers.length; i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(headers[i]);
+            cell.setCellStyle(headerStyle);
+        }
+
+        // 9. 产品明细行
+        BigDecimal sumWeight = BigDecimal.ZERO;
+        BigDecimal sumTotalMeters = BigDecimal.ZERO;
+        int seq = 1;
+        for (OrderItemDO item : items) {
+            // 跳过费用行
+            if (item.getItemType() != null && item.getItemType() == 1) continue;
+
+            Row dataRow = sheet.createRow(rowIndex++);
+            dataRow.setHeightInPoints(20f);
+
+            // 序号
+            Cell seqCell = dataRow.createCell(0);
+            seqCell.setCellValue(seq++);
+            seqCell.setCellStyle(dataCenterStyle);
+
+            // 产品名称
+            Cell nameCell = dataRow.createCell(1);
+            nameCell.setCellValue(item.getProductName() != null ? item.getProductName() : "");
+            nameCell.setCellStyle(dataCenterStyle);
+
+            // 规格
+            Cell specCell = dataRow.createCell(2);
+            specCell.setCellValue(item.getSpec() != null ? item.getSpec() : "");
+            specCell.setCellStyle(dataCenterStyle);
+
+            // 材质
+            Cell materialCell = dataRow.createCell(3);
+            materialCell.setCellValue(item.getMaterial() != null ? item.getMaterial() : "");
+            materialCell.setCellStyle(dataCenterStyle);
+
+            // 数量/根/张
+            Cell qtyCell = dataRow.createCell(4);
+            if (item.getSaleQuantity() != null) {
+                qtyCell.setCellValue(item.getSaleQuantity().doubleValue());
+            }
+            qtyCell.setCellStyle(dataCenterStyle);
+
+            // 长度/米
+            Cell lengthCell = dataRow.createCell(5);
+            if (item.getLength() != null) {
+                lengthCell.setCellValue(item.getLength().doubleValue());
+            }
+            lengthCell.setCellStyle(dataCenterStyle);
+
+            // 重量/吨
+            Cell weightCell = dataRow.createCell(6);
+            if (item.getWeight() != null) {
+                weightCell.setCellValue(item.getWeight().doubleValue());
+                sumWeight = sumWeight.add(item.getWeight());
+            }
+            weightCell.setCellStyle(dataCenterStyle);
+
+            // 厂家
+            Cell mfCell = dataRow.createCell(7);
+            mfCell.setCellValue(item.getManufacturer() != null ? item.getManufacturer() : "");
+            mfCell.setCellStyle(dataCenterStyle);
+
+            // 卸货位置（使用备注字段）
+            Cell posCell = dataRow.createCell(8);
+            posCell.setCellValue(item.getSaleRemark() != null ? item.getSaleRemark() : "");
+            posCell.setCellStyle(dataCenterStyle);
+
+            // 总米数
+            Cell tmCell = dataRow.createCell(9);
+            if (item.getTotalMeters() != null) {
+                tmCell.setCellValue(item.getTotalMeters().doubleValue());
+                sumTotalMeters = sumTotalMeters.add(item.getTotalMeters());
+            }
+            tmCell.setCellStyle(dataCenterStyle);
+
+            // 车号
+            Cell vnCell = dataRow.createCell(10);
+            vnCell.setCellValue(item.getVehicleNo() != null ? item.getVehicleNo() : "");
+            vnCell.setCellStyle(dataCenterStyle);
+        }
+
+        // 10. 合计行
+        Row totalRow = sheet.createRow(rowIndex++);
+        totalRow.setHeightInPoints(20f);
+
+        Cell totalLabelCell = totalRow.createCell(0);
+        totalLabelCell.setCellValue("合计");
+        totalLabelCell.setCellStyle(totalBorderStyle);
+
+        // 空单元格加边框
+        for (int i = 1; i <= 5; i++) {
+            Cell c = totalRow.createCell(i);
+            c.setCellStyle(totalBorderStyle);
+        }
+
+        // 重量合计
+        Cell sumWeightCell = totalRow.createCell(6);
+        sumWeightCell.setCellValue(sumWeight.doubleValue());
+        sumWeightCell.setCellStyle(totalBorderStyle);
+
+        // 空单元格
+        for (int i = 7; i <= 8; i++) {
+            Cell c = totalRow.createCell(i);
+            c.setCellStyle(totalBorderStyle);
+        }
+
+        // 总米数合计
+        Cell sumMetersCell = totalRow.createCell(9);
+        sumMetersCell.setCellValue(sumTotalMeters.doubleValue());
+        sumMetersCell.setCellStyle(totalBorderStyle);
+
+        // 车号（空）
+        Cell totalVnCell = totalRow.createCell(10);
+        totalVnCell.setCellStyle(totalBorderStyle);
+
+        // 11. 空行
+        sheet.createRow(rowIndex++);
+
+        // 12. 签收意见
+        Row opinionRow = sheet.createRow(rowIndex++);
+        opinionRow.setHeightInPoints(20f);
+        Cell opinionCell = opinionRow.createCell(0);
+        opinionCell.setCellValue("签收意见：");
+        opinionCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
+
+        // 13. 签收签字 + 签收日期
+        Row signRow = sheet.createRow(rowIndex++);
+        signRow.setHeightInPoints(20f);
+        Cell signCell = signRow.createCell(0);
+        signCell.setCellValue("签收签字：");
+        signCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 5));
+
+        Cell signDateCell = signRow.createCell(6);
+        signDateCell.setCellValue("签收日期：");
+        signDateCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
+
+        // 14. 温馨提示
+        Row tipRow = sheet.createRow(rowIndex++);
+        tipRow.setHeightInPoints(16f);
+        Cell tipCell = tipRow.createCell(0);
+        tipCell.setCellValue("温馨提示：请当面验收货物，如有问题请及时联系，签收后视为验收合格。");
+        tipCell.setCellStyle(normalStyleLeft);
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
+
+        // 15. 设置响应头并输出
+        String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String filename = "熙汇达鑫送货单-" + receivingUnit + "-" + dateStr + ".xlsx";
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("UTF-8");
         response.setHeader("Content-Disposition",
@@ -1368,6 +1789,37 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
+     * 创建左对齐文本样式
+     */
+    private CellStyle createTextStyleLeft(Workbook workbook, int fontSize) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) fontSize);
+        font.setBold(false);
+        style.setFont(font);
+        style.setAlignment(HorizontalAlignment.LEFT);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        style.setWrapText(true);
+        return style;
+    }
+
+    /**
+     * 创建右对齐文本样式
+     */
+    private CellStyle createTextStyleRight(Workbook workbook, int fontSize) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) fontSize);
+        font.setBold(false);
+        style.setFont(font);
+        style.setAlignment(HorizontalAlignment.RIGHT);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        return style;
+    }
+
+    /**
      * 获取订单付款状态文本
      */
     private String getPaymentStatusText(OrderDO order) {
@@ -1381,19 +1833,1051 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
-    // ========== 付款相关 ==========
+    // ========== 进销项导出相关 ==========
+
+    @Override
+    public void generateDetailExcel(Long orderId, HttpServletResponse response) throws IOException {
+        // 1. 查询所有关联数据
+        OrderDO order = validateOrderExists(orderId);
+        CustomerDO customer = order.getCustomerId() != null ? customerService.getCustomer(order.getCustomerId()) : null;
+        List<OrderItemDO> items = orderItemMapper.selectListByOrderId(orderId);
+        List<OrderItemDO> productItems = items.stream()
+                .filter(i -> i.getItemType() == null || i.getItemType() == 0)
+                .collect(Collectors.toList());
+
+        List<PurchaseOrderDO> purchaseOrders = purchaseOrderMapper.selectListByOrderId(orderId);
+        List<PurchaseOrderItemDO> purchaseItems = new ArrayList<>();
+        if (CollUtil.isNotEmpty(purchaseOrders)) {
+            List<Long> poIds = purchaseOrders.stream().map(PurchaseOrderDO::getId).collect(Collectors.toList());
+            purchaseItems = purchaseOrderItemMapper.selectListByPurchaseOrderIds(poIds);
+        }
+
+        List<PaymentDO> payments = paymentMapper.selectListByOrderId(orderId);
+        List<PaymentPlanDO> paymentPlans = paymentPlanMapper.selectListByOrderId(orderId);
+        List<ExpenseDO> expenses = expenseMapper.selectListByOrderId(orderId);
+        List<VoucherDO> vouchers = voucherMapper.selectListByOrderId(orderId);
+
+        // 收集供应商ID
+        Set<Long> supplierIds = new LinkedHashSet<>();
+        items.forEach(i -> { if (i.getSupplierId() != null) supplierIds.add(i.getSupplierId()); });
+        purchaseOrders.forEach(po -> { if (po.getSupplierId() != null) supplierIds.add(po.getSupplierId()); });
+        payments.forEach(p -> { if (p.getSupplierId() != null) supplierIds.add(p.getSupplierId()); });
+        Map<Long, SupplierDO> supplierMap = supplierIds.isEmpty() ? Collections.emptyMap()
+                : supplierService.getSupplierMap(new ArrayList<>(supplierIds));
+
+        String companyName = getCompanyNameByInvoice(order.getInvoiceCompany());
+        String filePrefix = getFilePrefixByInvoice(order.getInvoiceCompany());
+        String customerName = customer != null ? customer.getName() : "";
+
+        // 2. 创建工作簿
+        Workbook wb = new XSSFWorkbook();
+
+        // 公用样式
+        CellStyle headerStyle = createExportHeaderStyle(wb, false);
+        CellStyle headerBoldStyle = createExportHeaderStyle(wb, true);
+        CellStyle dataStyle = createExportDataStyle(wb);
+        CellStyle moneyStyle = createExportMoneyStyle(wb);
+        CellStyle titleStyle = createExportTitleStyle(wb);
+        CellStyle subtitleStyle = createExportSubtitleStyle(wb);
+        CellStyle redHeaderStyle = createExportRedHeaderStyle(wb);
+
+        // --- Sheet 1: 客户信息 ---
+        buildCustomerSheet(wb, headerStyle, dataStyle, customer);
+
+        // --- Sheet 2: 产品信息 ---
+        buildProductSheet(wb, headerStyle, dataStyle, moneyStyle, productItems);
+
+        // --- Sheet 3: 供应商信息 ---
+        buildSupplierSheet(wb, headerStyle, dataStyle, supplierMap);
+
+        // --- Sheet 4: 采购明细 ---
+        buildPurchaseDetailSheet(wb, headerStyle, dataStyle, moneyStyle,
+                order, purchaseOrders, purchaseItems, productItems, supplierMap, vouchers);
+
+        // --- Sheet 5: 销售明细 ---
+        buildSalesDetailSheet(wb, headerBoldStyle, dataStyle, moneyStyle,
+                order, productItems, customer, vouchers);
+
+        // --- Sheet 6: 付款明细 ---
+        buildPaymentDetailSheet(wb, headerStyle, dataStyle, moneyStyle,
+                payments, supplierMap, companyName);
+
+        // --- Sheet 7: 应付账款 ---
+        buildPayableSheet(wb, headerStyle, dataStyle, moneyStyle, redHeaderStyle,
+                productItems, payments, supplierMap);
+
+        // --- Sheet 8: 收款明细 ---
+        buildReceiptDetailSheet(wb, headerStyle, dataStyle, moneyStyle,
+                paymentPlans, customer, companyName);
+
+        // --- Sheet 9: 应收账款 ---
+        buildReceivableSheet(wb, headerStyle, dataStyle, moneyStyle, redHeaderStyle,
+                order, customer, paymentPlans);
+
+        // --- Sheet 10: 利润 ---
+        buildProfitSheet(wb, headerStyle, dataStyle, moneyStyle, titleStyle, subtitleStyle, order);
+
+        // --- Sheet 11: 运费支出 ---
+        buildExpenseSheet(wb, headerStyle, dataStyle, moneyStyle, titleStyle, subtitleStyle, expenses);
+
+        // 3. 输出
+        String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String projectName = "";
+        if (order.getProjectId() != null) {
+            ProjectDO project = projectService.getProject(order.getProjectId());
+            if (project != null) projectName = project.getName();
+        }
+        String filename = (projectName.isEmpty() ? filePrefix : projectName) + "进销项-" + customerName + "-" + dateStr + ".xlsx";
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setCharacterEncoding("UTF-8");
+        response.setHeader("Content-Disposition",
+                "attachment;filename=" + URLEncoder.encode(filename, "UTF-8"));
+        wb.write(response.getOutputStream());
+        wb.close();
+    }
+
+    // ---------- 各 Sheet 构建方法 ----------
+
+    private void buildCustomerSheet(Workbook wb, CellStyle hs, CellStyle ds, CustomerDO c) {
+        Sheet s = wb.createSheet("客户信息");
+        s.setColumnWidth(0, (int)(48 * 256));
+        s.setColumnWidth(1, (int)(16 * 256));
+        s.setColumnWidth(2, (int)(20 * 256));
+        Row h = s.createRow(0);
+        setCellVal(h, 0, "客户名称", hs); setCellVal(h, 1, "地址", hs); setCellVal(h, 2, "联系电话", hs);
+        if (c != null) {
+            Row r = s.createRow(1);
+            setCellVal(r, 0, c.getName(), ds);
+            setCellVal(r, 1, c.getAddress(), ds);
+            setCellVal(r, 2, c.getMobile(), ds);
+        }
+    }
+
+    private void buildProductSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms, List<OrderItemDO> items) {
+        Sheet s = wb.createSheet("产品信息");
+        s.setColumnWidth(0, (int)(37 * 256));
+        s.setColumnWidth(1, (int)(16 * 256));
+        s.setColumnWidth(2, (int)(37 * 256));
+        s.setColumnWidth(3, (int)(41 * 256));
+        Row h = s.createRow(0);
+        setCellVal(h, 0, "产品名称", hs); setCellVal(h, 1, "规格", hs);
+        setCellVal(h, 2, "销售单价", hs); setCellVal(h, 3, "采购单价", hs);
+        int rowIdx = 1;
+        for (OrderItemDO item : items) {
+            Row r = s.createRow(rowIdx++);
+            setCellVal(r, 0, item.getProductName(), ds);
+            setCellVal(r, 1, item.getSpec(), ds);
+            setCellNum(r, 2, item.getSalePrice(), ms);
+            setCellNum(r, 3, item.getPurchasePrice(), ms);
+        }
+    }
+
+    private void buildSupplierSheet(Workbook wb, CellStyle hs, CellStyle ds, Map<Long, SupplierDO> map) {
+        Sheet s = wb.createSheet("供应商信息");
+        s.setColumnWidth(0, (int)(36 * 256));
+        s.setColumnWidth(1, (int)(16 * 256));
+        s.setColumnWidth(2, (int)(20 * 256));
+        s.setColumnWidth(3, (int)(41 * 256));
+        Row h = s.createRow(0);
+        setCellVal(h, 0, "供应商", hs); setCellVal(h, 1, "地址", hs);
+        setCellVal(h, 2, "联系电话", hs); setCellVal(h, 3, "备注", hs);
+        int rowIdx = 1;
+        for (SupplierDO sup : map.values()) {
+            Row r = s.createRow(rowIdx++);
+            setCellVal(r, 0, sup.getName(), ds);
+            setCellVal(r, 1, sup.getAddress(), ds);
+            setCellVal(r, 2, sup.getMobile(), ds);
+            setCellVal(r, 3, sup.getRemark(), ds);
+        }
+    }
+
+    private void buildPurchaseDetailSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms,
+                                          OrderDO order, List<PurchaseOrderDO> poList,
+                                          List<PurchaseOrderItemDO> poItems,
+                                          List<OrderItemDO> orderItems,
+                                          Map<Long, SupplierDO> supplierMap,
+                                          List<VoucherDO> vouchers) {
+        Sheet s = wb.createSheet("采购明细");
+        int[] widths = {16, 15, 14, 13, 13, 16, 14, 30, 20, 16, 15, 25};
+        for (int i = 0; i < widths.length; i++) s.setColumnWidth(i, (int)(widths[i] * 256));
+        Row h = s.createRow(0);
+        String[] headers = {"日期", "产品名称", "规格", "单价", "数量", "金额", "采购员", "供应商名称", "地址", "联系电话", "开票情况", "备注"};
+        for (int i = 0; i < headers.length; i++) setCellVal(h, i, headers[i], hs);
+
+        // 按采购单ID汇总进项发票信息（direction=0为进项）
+        Map<Long, List<VoucherDO>> poVoucherMap = vouchers.stream()
+                .filter(v -> v.getDirection() != null && v.getDirection() == 0 && v.getPurchaseOrderId() != null)
+                .collect(Collectors.groupingBy(VoucherDO::getPurchaseOrderId));
+
+        int rowIdx = 1;
+        if (CollUtil.isNotEmpty(poItems)) {
+            Map<Long, PurchaseOrderDO> poMap = poList.stream().collect(Collectors.toMap(PurchaseOrderDO::getId, po -> po));
+            for (PurchaseOrderItemDO pi : poItems) {
+                Row r = s.createRow(rowIdx++);
+                PurchaseOrderDO po = poMap.get(pi.getPurchaseOrderId());
+                String dateStr = po != null && po.getCreateTime() != null
+                        ? po.getCreateTime().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+                setCellVal(r, 0, dateStr, ds);
+                setCellVal(r, 1, pi.getProductName(), ds);
+                setCellVal(r, 2, pi.getSpecName(), ds);
+                setCellNum(r, 3, pi.getPurchasePrice(), ms);
+                setCellNum(r, 4, pi.getQuantity(), ms);
+                setCellNum(r, 5, pi.getPurchaseAmount(), ms);
+                setCellVal(r, 6, "", ds);
+                SupplierDO sup = po != null ? supplierMap.get(po.getSupplierId()) : null;
+                setCellVal(r, 7, sup != null ? sup.getName() : "", ds);
+                setCellVal(r, 8, sup != null ? sup.getAddress() : "", ds);
+                setCellVal(r, 9, sup != null ? sup.getMobile() : "", ds);
+                // 开票情况：根据采购单是否有进项发票
+                String invoiceInfo = getInvoiceInfo(poVoucherMap, pi.getPurchaseOrderId());
+                setCellVal(r, 10, invoiceInfo, ds);
+                setCellVal(r, 11, po != null ? po.getRemark() : "", ds);
+            }
+        } else {
+            String dateStr = order.getOrderDate() != null
+                    ? order.getOrderDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+            for (OrderItemDO item : orderItems) {
+                if (item.getPurchasePrice() == null && item.getPurchaseAmount() == null) continue;
+                Row r = s.createRow(rowIdx++);
+                setCellVal(r, 0, dateStr, ds);
+                setCellVal(r, 1, item.getProductName(), ds);
+                setCellVal(r, 2, item.getSpec(), ds);
+                setCellNum(r, 3, item.getPurchasePrice(), ms);
+                setCellNum(r, 4, item.getPurchaseQuantity(), ms);
+                setCellNum(r, 5, item.getPurchaseAmount(), ms);
+                setCellVal(r, 6, "", ds);
+                SupplierDO sup = item.getSupplierId() != null ? supplierMap.get(item.getSupplierId()) : null;
+                setCellVal(r, 7, sup != null ? sup.getName() : "", ds);
+                setCellVal(r, 8, sup != null ? sup.getAddress() : "", ds);
+                setCellVal(r, 9, sup != null ? sup.getMobile() : "", ds);
+                setCellVal(r, 10, "", ds);
+                setCellVal(r, 11, "", ds);
+            }
+        }
+    }
+
+    private String getInvoiceInfo(Map<Long, List<VoucherDO>> poVoucherMap, Long purchaseOrderId) {
+        if (purchaseOrderId == null) return "";
+        List<VoucherDO> vList = poVoucherMap.get(purchaseOrderId);
+        if (CollUtil.isEmpty(vList)) return "";
+        StringBuilder sb = new StringBuilder("已开票");
+        for (VoucherDO v : vList) {
+            if (v.getInvoiceNo() != null && !v.getInvoiceNo().isEmpty()) {
+                sb.append(" ").append(v.getInvoiceNo());
+            }
+        }
+        return sb.toString();
+    }
+
+    private void buildSalesDetailSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms,
+                                       OrderDO order, List<OrderItemDO> items,
+                                       CustomerDO customer, List<VoucherDO> vouchers) {
+        Sheet s = wb.createSheet("销售明细");
+        int[] widths = {13, 24, 22, 12, 11, 13, 35, 16, 14};
+        for (int i = 0; i < widths.length; i++) s.setColumnWidth(i, (int)(widths[i] * 256));
+        Row h = s.createRow(0);
+        String[] headers = {"日期", "产品名称", "规格", "单价", "数量", "金额", "客户名称", "地址", "开票情况"};
+        for (int i = 0; i < headers.length; i++) setCellVal(h, i, headers[i], hs);
+
+        List<VoucherDO> outgoingVouchers = vouchers.stream()
+                .filter(v -> v.getDirection() != null && v.getDirection() == 1)
+                .collect(Collectors.toList());
+        String invoiceStatus = "";
+        if (CollUtil.isNotEmpty(outgoingVouchers)) {
+            StringBuilder sb = new StringBuilder("已开票");
+            for (VoucherDO v : outgoingVouchers) {
+                if (v.getInvoiceNo() != null && !v.getInvoiceNo().isEmpty()) {
+                    sb.append(" ").append(v.getInvoiceNo());
+                }
+            }
+            invoiceStatus = sb.toString();
+        }
+        String dateStr = order.getOrderDate() != null
+                ? order.getOrderDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+        int rowIdx = 1;
+        for (OrderItemDO item : items) {
+            Row r = s.createRow(rowIdx++);
+            setCellVal(r, 0, dateStr, ds);
+            setCellVal(r, 1, item.getProductName(), ds);
+            setCellVal(r, 2, item.getSpec(), ds);
+            setCellNum(r, 3, item.getSalePrice(), ms);
+            setCellNum(r, 4, item.getSaleQuantity(), ms);
+            setCellNum(r, 5, item.getSaleAmount(), ms);
+            setCellVal(r, 6, customer != null ? customer.getName() : "", ds);
+            setCellVal(r, 7, customer != null ? customer.getAddress() : "", ds);
+            setCellVal(r, 8, invoiceStatus, ds);
+        }
+    }
+
+    private void buildPaymentDetailSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms,
+                                         List<PaymentDO> payments, Map<Long, SupplierDO> supplierMap,
+                                         String companyName) {
+        Sheet s = wb.createSheet("付款明细");
+        s.setColumnWidth(0, (int)(21 * 256));
+        s.setColumnWidth(1, (int)(31 * 256));
+        s.setColumnWidth(2, (int)(21 * 256));
+        s.setColumnWidth(3, (int)(16 * 256));
+        s.setColumnWidth(4, (int)(21 * 256));
+        s.setColumnWidth(5, (int)(30 * 256));
+        s.setColumnWidth(6, (int)(11 * 256));
+        Row h = s.createRow(0);
+        String[] headers = {"日期", "供应商名称", "地址", "联系电话", "金额", "交款人", "发票"};
+        for (int i = 0; i < headers.length; i++) setCellVal(h, i, headers[i], hs);
+
+        int rowIdx = 1;
+        for (PaymentDO p : payments) {
+            Row r = s.createRow(rowIdx++);
+            String dateStr = p.getPaymentDate() != null
+                    ? p.getPaymentDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+            setCellVal(r, 0, dateStr, ds);
+            SupplierDO sup = p.getSupplierId() != null ? supplierMap.get(p.getSupplierId()) : null;
+            setCellVal(r, 1, sup != null ? sup.getName() : "", ds);
+            setCellVal(r, 2, sup != null ? sup.getAddress() : "", ds);
+            setCellVal(r, 3, sup != null ? sup.getMobile() : "", ds);
+            setCellNum(r, 4, p.getAmount(), ms);
+            setCellVal(r, 5, companyName, ds);
+            setCellVal(r, 6, "", ds);
+        }
+    }
+
+    private void buildPayableSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms, CellStyle rhs,
+                                   List<OrderItemDO> items, List<PaymentDO> payments,
+                                   Map<Long, SupplierDO> supplierMap) {
+        Sheet s = wb.createSheet("应付账款");
+        int[] widths = {33, 17, 16, 20, 18, 18, 16, 11};
+        for (int i = 0; i < widths.length; i++) s.setColumnWidth(i, (int)(widths[i] * 256));
+        Row h = s.createRow(0);
+        String[] headers = {"供应商名称", "地址", "联系电话", "采购金额", "已付金额", "应付金额", "应付占百分比", "排名"};
+        for (int i = 0; i < 7; i++) setCellVal(h, i, headers[i], hs);
+        setCellVal(h, 7, headers[7], rhs);
+
+        // 按供应商聚合采购金额
+        Map<Long, BigDecimal> purchaseBySupplier = new LinkedHashMap<>();
+        for (OrderItemDO item : items) {
+            if (item.getSupplierId() != null && item.getPurchaseAmount() != null) {
+                purchaseBySupplier.merge(item.getSupplierId(), item.getPurchaseAmount(), BigDecimal::add);
+            }
+        }
+        // 按供应商聚合已付金额
+        Map<Long, BigDecimal> paidBySupplier = new LinkedHashMap<>();
+        for (PaymentDO p : payments) {
+            if (p.getSupplierId() != null && p.getAmount() != null) {
+                paidBySupplier.merge(p.getSupplierId(), p.getAmount(), BigDecimal::add);
+            }
+        }
+
+        BigDecimal totalPayable = BigDecimal.ZERO;
+        Set<Long> allSupplierIds = new LinkedHashSet<>();
+        allSupplierIds.addAll(purchaseBySupplier.keySet());
+        allSupplierIds.addAll(paidBySupplier.keySet());
+        // 计算每个供应商应付金额并排序
+        List<Map.Entry<Long, BigDecimal>> payableEntries = new ArrayList<>();
+        for (Long sid : allSupplierIds) {
+            BigDecimal purchase = purchaseBySupplier.getOrDefault(sid, BigDecimal.ZERO);
+            BigDecimal paid = paidBySupplier.getOrDefault(sid, BigDecimal.ZERO);
+            BigDecimal payable = purchase.subtract(paid);
+            payableEntries.add(new AbstractMap.SimpleEntry<>(sid, payable));
+            totalPayable = totalPayable.add(payable);
+        }
+        payableEntries.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+
+        int rowIdx = 1;
+        int rank = 1;
+        for (Map.Entry<Long, BigDecimal> entry : payableEntries) {
+            Long sid = entry.getKey();
+            SupplierDO sup = supplierMap.get(sid);
+            BigDecimal purchase = purchaseBySupplier.getOrDefault(sid, BigDecimal.ZERO);
+            BigDecimal paid = paidBySupplier.getOrDefault(sid, BigDecimal.ZERO);
+            BigDecimal payable = entry.getValue();
+            double pct = totalPayable.compareTo(BigDecimal.ZERO) != 0
+                    ? payable.doubleValue() / totalPayable.doubleValue() : 0;
+
+            Row r = s.createRow(rowIdx++);
+            setCellVal(r, 0, sup != null ? sup.getName() : "", ds);
+            setCellVal(r, 1, sup != null ? sup.getAddress() : "", ds);
+            setCellVal(r, 2, sup != null ? sup.getMobile() : "", ds);
+            setCellNum(r, 3, purchase, ms);
+            setCellNum(r, 4, paid, ms);
+            setCellNum(r, 5, payable, ms);
+            Cell pctCell = r.createCell(6); pctCell.setCellValue(pct); pctCell.setCellStyle(ds);
+            Cell rankCell = r.createCell(7); rankCell.setCellValue(rank++); rankCell.setCellStyle(ds);
+        }
+    }
+
+    private void buildReceiptDetailSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms,
+                                         List<PaymentPlanDO> plans, CustomerDO customer, String companyName) {
+        Sheet s = wb.createSheet("收款明细");
+        s.setColumnWidth(0, (int)(17 * 256));
+        s.setColumnWidth(1, (int)(31 * 256));
+        s.setColumnWidth(2, (int)(15 * 256));
+        s.setColumnWidth(3, (int)(17 * 256));
+        s.setColumnWidth(4, (int)(17 * 256));
+        s.setColumnWidth(5, (int)(43 * 256));
+        s.setColumnWidth(6, (int)(16 * 256));
+        Row h = s.createRow(0);
+        String[] headers = {"日期", "客户名称", "地址", "联系电话", "金额", "交款人", "收款人"};
+        for (int i = 0; i < headers.length; i++) setCellVal(h, i, headers[i], hs);
+
+        int rowIdx = 1;
+        List<PaymentPlanDO> receipts = plans.stream()
+                .filter(p -> p.getType() != null && p.getType() == 1
+                        && p.getPaidAmount() != null && p.getPaidAmount().compareTo(BigDecimal.ZERO) > 0)
+                .collect(Collectors.toList());
+        for (PaymentPlanDO plan : receipts) {
+            Row r = s.createRow(rowIdx++);
+            String dateStr = plan.getActualDate() != null
+                    ? plan.getActualDate().format(DateTimeFormatter.ofPattern("yyyy.M.d"))
+                    : (plan.getPlanDate() != null ? plan.getPlanDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "");
+            setCellVal(r, 0, dateStr, ds);
+            setCellVal(r, 1, customer != null ? customer.getName() : "", ds);
+            setCellVal(r, 2, customer != null ? customer.getAddress() : "", ds);
+            setCellVal(r, 3, customer != null ? customer.getMobile() : "", ds);
+            setCellNum(r, 4, plan.getPaidAmount(), ms);
+            setCellVal(r, 5, customer != null ? customer.getName() : "", ds);
+            setCellVal(r, 6, companyName, ds);
+        }
+    }
+
+    private void buildReceivableSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms, CellStyle rhs,
+                                      OrderDO order, CustomerDO customer, List<PaymentPlanDO> plans) {
+        Sheet s = wb.createSheet("应收账款");
+        int[] widths = {34, 16, 19, 13, 16, 14, 13, 18, 12};
+        for (int i = 0; i < widths.length; i++) s.setColumnWidth(i, (int)(widths[i] * 256));
+        Row h = s.createRow(0);
+        String[] headers = {"客户名称", "地址", "联系电话", "上期结转应收", "销售金额", "已收金额", "应收金额", "应收占百分比", "排名"};
+        for (int i = 0; i < 8; i++) setCellVal(h, i, headers[i], hs);
+        setCellVal(h, 8, headers[8], rhs);
+
+        BigDecimal salesAmount = order.getTotalAmount() != null ? order.getTotalAmount() : BigDecimal.ZERO;
+        BigDecimal discount = order.getDiscountAmount() != null ? order.getDiscountAmount() : BigDecimal.ZERO;
+        BigDecimal netSales = salesAmount.subtract(discount);
+        BigDecimal received = plans.stream()
+                .filter(p -> p.getType() != null && p.getType() == 1 && p.getPaidAmount() != null)
+                .map(PaymentPlanDO::getPaidAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (received.compareTo(BigDecimal.ZERO) == 0 && order.getPaidAmount() != null) {
+            received = order.getPaidAmount();
+        }
+        BigDecimal receivable = netSales.subtract(received);
+
+        Row r = s.createRow(1);
+        setCellVal(r, 0, customer != null ? customer.getName() : "", ds);
+        setCellVal(r, 1, customer != null ? customer.getAddress() : "", ds);
+        setCellVal(r, 2, customer != null ? customer.getMobile() : "", ds);
+        setCellNum(r, 3, BigDecimal.ZERO, ms);
+        setCellNum(r, 4, netSales, ms);
+        setCellNum(r, 5, received, ms);
+        setCellNum(r, 6, receivable, ms);
+        Cell pctCell = r.createCell(7);
+        pctCell.setCellValue(netSales.compareTo(BigDecimal.ZERO) != 0
+                ? receivable.doubleValue() / netSales.doubleValue() : 0);
+        pctCell.setCellStyle(ds);
+        Cell rankCell = r.createCell(8); rankCell.setCellValue(1); rankCell.setCellStyle(ds);
+    }
+
+    private void buildProfitSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms,
+                                  CellStyle titleStyle, CellStyle subtitleStyle, OrderDO order) {
+        Sheet s = wb.createSheet("利润");
+        int[] widths = {5, 12, 12, 15, 12, 11, 15, 27};
+        for (int i = 0; i < widths.length; i++) s.setColumnWidth(i, (int)(widths[i] * 256));
+
+        // Row 0: 标题
+        Row r0 = s.createRow(0);
+        setCellVal(r0, 0, "利润明细表", titleStyle);
+        for (int i = 1; i < 8; i++) r0.createCell(i).setCellStyle(titleStyle);
+        s.addMergedRegion(new CellRangeAddress(0, 0, 0, 7));
+
+        // Row 1: 子标题
+        Row r1 = s.createRow(1);
+        setCellVal(r1, 0, "利润", subtitleStyle);
+        for (int i = 1; i < 8; i++) r1.createCell(i).setCellStyle(subtitleStyle);
+        s.addMergedRegion(new CellRangeAddress(1, 1, 0, 7));
+
+        // Row 2: 表头
+        Row hRow = s.createRow(2);
+        String[] headers = {"序号", "日期", "销售金额", "采购金额", "吨位", "加价", "总金额", "备注"};
+        for (int i = 0; i < headers.length; i++) setCellVal(hRow, i, headers[i], hs);
+
+        // Row 3: 数据
+        Row dRow = s.createRow(3);
+        Cell seqCell = dRow.createCell(0); seqCell.setCellValue(1); seqCell.setCellStyle(ds);
+        String dateStr = order.getOrderDate() != null
+                ? order.getOrderDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+        setCellVal(dRow, 1, dateStr, ds);
+        setCellNum(dRow, 2, order.getTotalAmount(), ms);
+        setCellNum(dRow, 3, order.getTotalPurchaseAmount(), ms);
+        setCellVal(dRow, 4, "", ds); // 吨位 - 留空
+        setCellVal(dRow, 5, "", ds); // 加价 - 留空
+        setCellVal(dRow, 6, "", ds); // 总金额 - 留空
+        setCellVal(dRow, 7, order.getRemark(), ds);
+
+        // Row 4: 合计
+        Row tRow = s.createRow(4);
+        setCellVal(tRow, 0, "合计", hs);
+        tRow.createCell(1).setCellStyle(hs);
+        s.addMergedRegion(new CellRangeAddress(4, 4, 0, 1));
+        setCellNum(tRow, 2, order.getTotalAmount(), ms);
+        setCellNum(tRow, 3, order.getTotalPurchaseAmount(), ms);
+        setCellVal(tRow, 4, "", hs);
+        setCellVal(tRow, 5, "", hs);
+        setCellVal(tRow, 6, "", hs);
+        setCellVal(tRow, 7, "", hs);
+    }
+
+    private void buildExpenseSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms,
+                                   CellStyle titleStyle, CellStyle subtitleStyle, List<ExpenseDO> expenses) {
+        Sheet s = wb.createSheet("运费支出");
+        int[] widths = {5, 12, 12, 15, 10, 11, 10, 10, 32};
+        for (int i = 0; i < widths.length; i++) s.setColumnWidth(i, (int)(widths[i] * 256));
+
+        // Row 0: 标题
+        Row r0 = s.createRow(0);
+        setCellVal(r0, 0, "运费明细表", titleStyle);
+        for (int i = 1; i < 9; i++) r0.createCell(i).setCellStyle(titleStyle);
+        s.addMergedRegion(new CellRangeAddress(0, 0, 0, 8));
+
+        // Row 1: 子标题
+        Row r1 = s.createRow(1);
+        setCellVal(r1, 0, "运费吊装费支出", subtitleStyle);
+        for (int i = 1; i < 9; i++) r1.createCell(i).setCellStyle(subtitleStyle);
+        s.addMergedRegion(new CellRangeAddress(1, 1, 0, 8));
+
+        // Row 2: 表头
+        Row hRow = s.createRow(2);
+        String[] headers = {"序号", "日期", "车号", "运费", "吊装费", "复印费", "支出", "付款人", "备注"};
+        for (int i = 0; i < headers.length; i++) setCellVal(hRow, i, headers[i], hs);
+
+        BigDecimal totalExpense = BigDecimal.ZERO;
+        int rowIdx = 3;
+        int seq = 1;
+        for (ExpenseDO exp : expenses) {
+            Row r = s.createRow(rowIdx++);
+            Cell seqCell = r.createCell(0); seqCell.setCellValue(seq++); seqCell.setCellStyle(ds);
+            String dateStr = exp.getExpenseDate() != null
+                    ? exp.getExpenseDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+            setCellVal(r, 1, dateStr, ds);
+            setCellVal(r, 2, exp.getVehicleNo(), ds);
+            setCellNum(r, 3, exp.getFreight(), ms);
+            setCellNum(r, 4, exp.getCraneFee(), ms);
+            setCellNum(r, 5, exp.getCopyFee(), ms);
+            setCellNum(r, 6, exp.getTotalExpense(), ms);
+            setCellVal(r, 7, exp.getPayer(), ds);
+            setCellVal(r, 8, exp.getRemark(), ds);
+            if (exp.getTotalExpense() != null) totalExpense = totalExpense.add(exp.getTotalExpense());
+        }
+
+        // 合计行
+        Row tRow = s.createRow(rowIdx);
+        setCellVal(tRow, 0, "", hs);
+        for (int i = 1; i < 6; i++) tRow.createCell(i).setCellStyle(hs);
+        setCellNum(tRow, 6, totalExpense, ms);
+        tRow.createCell(7).setCellStyle(hs);
+        tRow.createCell(8).setCellStyle(hs);
+    }
+
+    // ---------- 导出样式辅助方法 ----------
+
+    private CellStyle createExportHeaderStyle(Workbook wb, boolean bold) {
+        CellStyle style = wb.createCellStyle();
+        style.setAlignment(HorizontalAlignment.CENTER);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        Font font = wb.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) 11);
+        font.setBold(bold);
+        style.setFont(font);
+        return style;
+    }
+
+    private CellStyle createExportDataStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        style.setAlignment(HorizontalAlignment.CENTER);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        Font font = wb.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) 11);
+        style.setFont(font);
+        return style;
+    }
+
+    private CellStyle createExportMoneyStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        style.setAlignment(HorizontalAlignment.RIGHT);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        style.setDataFormat(wb.createDataFormat().getFormat("0.00_ "));
+        Font font = wb.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) 11);
+        style.setFont(font);
+        return style;
+    }
+
+    private CellStyle createExportTitleStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        style.setAlignment(HorizontalAlignment.CENTER);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        style.setFillForegroundColor(IndexedColors.YELLOW.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        Font font = wb.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) 18);
+        font.setBold(true);
+        style.setFont(font);
+        return style;
+    }
+
+    private CellStyle createExportSubtitleStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        style.setAlignment(HorizontalAlignment.CENTER);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        Font font = wb.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) 12);
+        style.setFont(font);
+        return style;
+    }
+
+    private CellStyle createExportRedHeaderStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        style.setAlignment(HorizontalAlignment.CENTER);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        style.setFillForegroundColor(IndexedColors.RED.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        Font font = wb.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) 11);
+        font.setColor(IndexedColors.WHITE.getIndex());
+        style.setFont(font);
+        return style;
+    }
+
+    // ---------- 单元格写入辅助方法 ----------
+
+    private void setCellVal(Row row, int col, String value, CellStyle style) {
+        Cell cell = row.createCell(col);
+        cell.setCellValue(value != null ? value : "");
+        cell.setCellStyle(style);
+    }
+
+    private void setCellNum(Row row, int col, BigDecimal value, CellStyle style) {
+        Cell cell = row.createCell(col);
+        if (value != null) {
+            cell.setCellValue(value.doubleValue());
+        }
+        cell.setCellStyle(style);
+    }
+
+    // ========== 结算相关 ==========
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void markOrderAsPaid(Long id) {
+    public void enterSettlement(Long id) {
         // 1. 校验订单存在
         OrderDO order = validateOrderExists(id);
 
-        // 2. 更新已付金额为应付金额（表示已付清）
+        // 2. 校验订单状态：必须是进行中
+        if (!OrderStatusEnum.CONFIRMED.getStatus().equals(order.getStatus())) {
+            throw exception(ORDER_STATUS_NOT_ALLOW_SETTLEMENT);
+        }
+
+        // 3. 校验成本已填充
+        if (!Boolean.TRUE.equals(order.getCostFilled())) {
+            throw exception(ORDER_COST_NOT_FILLED_FOR_SETTLEMENT);
+        }
+
+        // 4. 校验应收计划已建立
+        List<PaymentPlanDO> receivables = paymentPlanMapper.selectList(
+                new LambdaQueryWrapperX<PaymentPlanDO>()
+                        .eq(PaymentPlanDO::getOrderId, id)
+                        .eq(PaymentPlanDO::getType, 1)
+                        .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
+        );
+        if (CollUtil.isEmpty(receivables)) {
+            throw exception(ORDER_NO_RECEIVABLE_PLAN);
+        }
+
+        // 5. 校验应付计划已建立
+        List<PaymentPlanDO> payables = paymentPlanMapper.selectList(
+                new LambdaQueryWrapperX<PaymentPlanDO>()
+                        .eq(PaymentPlanDO::getOrderId, id)
+                        .eq(PaymentPlanDO::getType, 0)
+                        .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
+        );
+        if (CollUtil.isEmpty(payables)) {
+            throw exception(ORDER_NO_PAYABLE_PLAN);
+        }
+
+        // 6. 校验应收计划总额 = 订单应收金额
+        BigDecimal receivableTotal = receivables.stream()
+                .map(PaymentPlanDO::getPlanAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (order.getPayableAmount() != null && receivableTotal.compareTo(order.getPayableAmount()) != 0) {
+            throw exception(ORDER_RECEIVABLE_AMOUNT_MISMATCH);
+        }
+
+        // 7. 校验应付计划按供应商汇总 = 各供应商采购总额
+        List<OrderItemDO> items = orderItemMapper.selectListByOrderId(id);
+        Map<Long, BigDecimal> supplierPurchaseMap = items.stream()
+                .filter(item -> item.getSupplierId() != null && item.getPurchaseAmount() != null)
+                .collect(Collectors.groupingBy(OrderItemDO::getSupplierId,
+                        Collectors.reducing(BigDecimal.ZERO, OrderItemDO::getPurchaseAmount, BigDecimal::add)));
+
+        Map<Long, BigDecimal> supplierPlanMap = payables.stream()
+                .filter(p -> p.getSupplierId() != null)
+                .collect(Collectors.groupingBy(PaymentPlanDO::getSupplierId,
+                        Collectors.reducing(BigDecimal.ZERO, PaymentPlanDO::getPlanAmount, BigDecimal::add)));
+
+        for (Map.Entry<Long, BigDecimal> entry : supplierPurchaseMap.entrySet()) {
+            BigDecimal planTotal = supplierPlanMap.getOrDefault(entry.getKey(), BigDecimal.ZERO);
+            if (planTotal.compareTo(entry.getValue()) != 0) {
+                throw exception(ORDER_PAYABLE_AMOUNT_MISMATCH);
+            }
+        }
+
+        // 8. 更新订单状态为结算中
         OrderDO updateObj = new OrderDO();
         updateObj.setId(id);
-        updateObj.setPaidAmount(order.getPayableAmount());
+        updateObj.setStatus(OrderStatusEnum.SETTLING.getStatus());
         orderMapper.updateById(updateObj);
+
+        operationLogService.log("order", id, order.getOrderNo(),
+                "enter_settlement", null, null, "进入结算");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void completeOrder(Long id) {
+        OrderDO order = validateOrderExists(id);
+        if (!OrderStatusEnum.CONFIRMED.getStatus().equals(order.getStatus())) {
+            throw exception(ORDER_STATUS_INVALID_TRANSITION);
+        }
+        OrderDO updateObj = new OrderDO();
+        updateObj.setId(id);
+        updateObj.setStatus(OrderStatusEnum.COMPLETED.getStatus());
+        orderMapper.updateById(updateObj);
+        operationLogService.log("order", id, order.getOrderNo(),
+                "complete", null, null, "手动标记订单完成");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void checkAndAutoComplete(Long orderId) {
+        OrderDO order = orderMapper.selectById(orderId);
+        if (order == null) {
+            return;
+        }
+        // 已完成、已取消状态不参与自动流转
+        Integer status = order.getStatus();
+        if (OrderStatusEnum.COMPLETED.getStatus().equals(status)
+                || OrderStatusEnum.CANCELLED.getStatus().equals(status)) {
+            return;
+        }
+        List<PaymentPlanDO> allPlans = paymentPlanMapper.selectList(
+                new LambdaQueryWrapperX<PaymentPlanDO>()
+                        .eq(PaymentPlanDO::getOrderId, orderId)
+                        .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
+        );
+        if (CollUtil.isEmpty(allPlans)) {
+            return;
+        }
+        // 必须同时存在应收计划（type=1）和应付计划（type=0），且各自全部已结清，才触发自动完成
+        List<PaymentPlanDO> receivablePlans = allPlans.stream()
+                .filter(p -> Integer.valueOf(1).equals(p.getType()))
+                .collect(Collectors.toList());
+        List<PaymentPlanDO> payablePlans = allPlans.stream()
+                .filter(p -> Integer.valueOf(0).equals(p.getType()))
+                .collect(Collectors.toList());
+        if (CollUtil.isEmpty(receivablePlans) || CollUtil.isEmpty(payablePlans)) {
+            return;
+        }
+        boolean allPaid = allPlans.stream()
+                .allMatch(p -> PaymentPlanStatusEnum.PAID.getStatus().equals(p.getStatus()));
+        if (allPaid) {
+            OrderDO updateObj = new OrderDO();
+            updateObj.setId(orderId);
+            updateObj.setStatus(OrderStatusEnum.COMPLETED.getStatus());
+            orderMapper.updateById(updateObj);
+            operationLogService.log("order", orderId, order.getOrderNo(),
+                    "auto_complete", null, null, "应收应付全部结清，订单自动完成");
+        }
+    }
+
+    @Override
+    public boolean hasAssociatedData(Long id) {
+        // 有采购单 OR 付款计划 OR 费用 即视为有关联数据
+        boolean hasPurchase = !purchaseOrderMapper.selectListByOrderId(id).isEmpty();
+        if (hasPurchase) return true;
+        boolean hasPlan = !paymentPlanMapper.selectListByOrderId(id).isEmpty();
+        if (hasPlan) return true;
+        return !expenseMapper.selectListByOrderId(id).isEmpty();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void clearAssociatedData(Long id) {
+        OrderDO order = validateOrderExists(id);
+
+        // 若已有实际付款记录，拒绝清空（钱已经动了，不能随意清除）
+        List<cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO> payments =
+                paymentMapper.selectListByOrderId(id);
+        if (!CollUtil.isEmpty(payments)) {
+            throw exception(ORDER_STATUS_NOT_ALLOW_UPDATE); // 复用异常：已有付款记录不可清空
+        }
+
+        // 1. 删除关联通知
+        List<Long> planIds = paymentPlanMapper.selectListByOrderId(id).stream()
+                .map(PaymentPlanDO::getId).collect(Collectors.toList());
+        if (!planIds.isEmpty()) {
+            paymentPlanService.deleteNotificationsByPlanIds(planIds);
+        }
+
+        // 2. 删除付款计划
+        paymentPlanMapper.deleteByOrderId(id);
+
+        // 3. 删除采购单明细 & 采购单
+        List<Long> purchaseOrderIds = purchaseOrderMapper.selectListByOrderId(id).stream()
+                .map(cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO::getId)
+                .collect(Collectors.toList());
+        if (!purchaseOrderIds.isEmpty()) {
+            purchaseOrderItemMapper.deleteByPurchaseOrderIds(purchaseOrderIds);
+        }
+        purchaseOrderMapper.deleteByOrderId(id);
+
+        // 4. 删除费用明细
+        expenseMapper.deleteByOrderId(id);
+
+        // 5. 重置订单明细的成本字段
+        List<OrderItemDO> items = orderItemMapper.selectListByOrderId(id);
+        for (OrderItemDO item : items) {
+            OrderItemDO reset = new OrderItemDO();
+            reset.setId(item.getId());
+            reset.setPurchaseUnit(null);
+            reset.setPurchaseQuantity(null);
+            reset.setPurchasePrice(null);
+            reset.setPurchaseAmount(null);
+            reset.setPurchaseRemark(null);
+            reset.setSupplierId(null);
+            reset.setGrossProfit(null);
+            reset.setTaxAmount(null);
+            reset.setNetProfit(null);
+            orderItemMapper.updateById(reset);
+        }
+
+        // 6. 重置订单成本汇总字段
+        OrderDO resetOrder = new OrderDO();
+        resetOrder.setId(id);
+        resetOrder.setCostFilled(false);
+        resetOrder.setTotalPurchaseAmount(null);
+        resetOrder.setTotalGrossProfit(null);
+        resetOrder.setTotalTaxAmount(null);
+        resetOrder.setTotalNetProfit(null);
+        orderMapper.updateById(resetOrder);
+
+        operationLogService.log("order", id, order.getOrderNo(),
+                "clear_associated", null, null, "清空关联数据（采购单、付款计划、费用），准备重新编辑");
+    }
+
+    // ========== 副订单相关 ==========
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long createSubOrder(cn.iocoder.stmc.module.erp.controller.admin.order.vo.SubOrderSaveReqVO reqVO) {
+        // 1. 校验主订单存在且未录入副订单
+        OrderDO mainOrder = orderMapper.selectById(reqVO.getParentOrderId());
+        if (mainOrder == null) {
+            throw exception(ORDER_NOT_EXISTS);
+        }
+        if (mainOrder.getSubOrderStatus() != null && mainOrder.getSubOrderStatus() == 1) {
+            throw exception(new cn.iocoder.stmc.framework.common.exception.ErrorCode(1_030_010_100, "该订单已录入副订单"));
+        }
+        // 退货单不能创建副订单
+        if (mainOrder.getIsReturn() != null && mainOrder.getIsReturn() == 1) {
+            throw exception(new cn.iocoder.stmc.framework.common.exception.ErrorCode(1_030_010_101, "退货单不支持创建副订单"));
+        }
+
+        // 2. 生成副订单号
+        String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String randomStr = String.format("%04d", IdUtil.getSnowflakeNextId() % 10000);
+        String orderNo = "SUB" + dateStr + randomStr;
+
+        // 3. 创建副订单
+        OrderDO subOrder = new OrderDO();
+        subOrder.setOrderNo(orderNo);
+        subOrder.setOrderType(mainOrder.getOrderType());
+        subOrder.setParentOrderId(reqVO.getParentOrderId());
+        subOrder.setCustomerId(mainOrder.getCustomerId());
+        subOrder.setProjectId(mainOrder.getProjectId());
+        subOrder.setInvoiceCompany(1); // 固定熙汇达鑫
+        subOrder.setOrderDate(mainOrder.getOrderDate());
+        subOrder.setDeliveryDate(mainOrder.getDeliveryDate());
+        subOrder.setContact(reqVO.getContact() != null ? reqVO.getContact() : mainOrder.getContact());
+        subOrder.setMobile(reqVO.getMobile() != null ? reqVO.getMobile() : mainOrder.getMobile());
+        subOrder.setAddress(reqVO.getAddress() != null ? reqVO.getAddress() : mainOrder.getAddress());
+        subOrder.setReceivingUnit(reqVO.getReceivingUnit());
+        subOrder.setVehicleNo(reqVO.getVehicleNo());
+        subOrder.setRemark(reqVO.getRemark());
+        subOrder.setStatus(mainOrder.getStatus());
+        subOrder.setIsReturn(0);
+        subOrder.setOrderCategory(1); // 标记为副订单
+        subOrder.setSubOrderStatus(0);
+
+        // 设置录入人为当前用户
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        subOrder.setSalesmanId(userId);
+
+        // 计算汇总
+        BigDecimal totalQuantity = BigDecimal.ZERO;
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        for (cn.iocoder.stmc.module.erp.controller.admin.order.vo.SubOrderSaveReqVO.SubOrderItemVO item : reqVO.getItems()) {
+            totalQuantity = totalQuantity.add(item.getSaleQuantity() != null ? item.getSaleQuantity() : BigDecimal.ZERO);
+            totalAmount = totalAmount.add(item.getSaleAmount() != null ? item.getSaleAmount() : BigDecimal.ZERO);
+        }
+        subOrder.setTotalQuantity(totalQuantity);
+        subOrder.setTotalAmount(totalAmount);
+        subOrder.setPayableAmount(totalAmount);
+
+        orderMapper.insert(subOrder);
+
+        // 4. 创建副订单商品行
+        List<OrderItemDO> subItems = new ArrayList<>();
+        for (cn.iocoder.stmc.module.erp.controller.admin.order.vo.SubOrderSaveReqVO.SubOrderItemVO itemVO : reqVO.getItems()) {
+            OrderItemDO item = new OrderItemDO();
+            item.setOrderId(subOrder.getId());
+            item.setParentItemId(itemVO.getParentItemId());
+            item.setItemType(itemVO.getItemType() != null ? itemVO.getItemType() : 0);
+            item.setProductName(itemVO.getProductName());
+            item.setSpec(itemVO.getSpec());
+            item.setSaleUnit(itemVO.getSaleUnit());
+            item.setSaleQuantity(itemVO.getSaleQuantity());
+            item.setSalePrice(itemVO.getSalePrice());
+            item.setSaleAmount(itemVO.getSaleAmount());
+            item.setSaleRemark(itemVO.getSaleRemark());
+            // 产品属性字段
+            item.setMaterial(itemVO.getMaterial());
+            item.setBrand(itemVO.getBrand());
+            item.setManufacturer(itemVO.getManufacturer());
+            // 发货/送货信息字段
+            item.setWeight(itemVO.getWeight());
+            item.setLength(itemVO.getLength());
+            item.setTotalMeters(itemVO.getTotalMeters());
+            item.setVehicleNo(itemVO.getVehicleNo());
+            subItems.add(item);
+        }
+        orderItemMapper.insertBatch(subItems);
+
+        // 5. 更新主订单 sub_order_status = 1
+        OrderDO updateMain = new OrderDO();
+        updateMain.setId(reqVO.getParentOrderId());
+        updateMain.setSubOrderStatus(1);
+        orderMapper.updateById(updateMain);
+
+        return subOrder.getId();
+    }
+
+    @Override
+    public Long createReturnOrder(Long orderId, List<cn.iocoder.stmc.module.erp.controller.admin.order.vo.ReturnOrderReqVO.ReturnItemVO> items) {
+        // 1. 校验原订单存在
+        OrderDO originalOrder = validateOrderExists(orderId);
+
+        // 2. 获取原订单明细
+        List<OrderItemDO> originalItems = orderItemMapper.selectList(OrderItemDO::getOrderId, orderId);
+        Map<Long, OrderItemDO> originalItemMap = originalItems.stream()
+                .collect(java.util.stream.Collectors.toMap(OrderItemDO::getId, item -> item));
+
+        // 3. 创建退货单（负数订单）
+        OrderDO returnOrder = new OrderDO();
+        returnOrder.setOrderNo("RT-" + IdUtil.getSnowflakeNextIdStr());
+        returnOrder.setCustomerId(originalOrder.getCustomerId());
+        returnOrder.setProjectId(originalOrder.getProjectId());
+        returnOrder.setInvoiceCompany(originalOrder.getInvoiceCompany());
+        returnOrder.setOrderType(originalOrder.getOrderType());
+        returnOrder.setOrderDate(java.time.LocalDateTime.now());
+        returnOrder.setStatus(OrderStatusEnum.COMPLETED.getStatus());
+        returnOrder.setParentOrderId(orderId);
+        returnOrder.setIsReturn(1);
+        returnOrder.setContact(originalOrder.getContact());
+        returnOrder.setMobile(originalOrder.getMobile());
+        returnOrder.setAddress(originalOrder.getAddress());
+
+        // 4. 计算退货明细和总金额
+        java.math.BigDecimal totalQuantity = java.math.BigDecimal.ZERO;
+        java.math.BigDecimal totalAmount = java.math.BigDecimal.ZERO;
+        java.util.List<OrderItemDO> returnItems = new java.util.ArrayList<>();
+
+        for (cn.iocoder.stmc.module.erp.controller.admin.order.vo.ReturnOrderReqVO.ReturnItemVO reqItem : items) {
+            OrderItemDO originalItem = originalItemMap.get(reqItem.getOrderItemId());
+            if (originalItem == null) {
+                continue;
+            }
+            OrderItemDO returnItem = new OrderItemDO();
+            returnItem.setProductName(originalItem.getProductName());
+            returnItem.setSpec(originalItem.getSpec());
+            returnItem.setSaleUnit(originalItem.getSaleUnit());
+            returnItem.setItemType(originalItem.getItemType());
+            // 退货数量和金额取负值
+            returnItem.setSaleQuantity(reqItem.getReturnQuantity().negate());
+            if (originalItem.getSalePrice() != null) {
+                returnItem.setSalePrice(originalItem.getSalePrice());
+                returnItem.setSaleAmount(originalItem.getSalePrice().multiply(reqItem.getReturnQuantity()).negate());
+            } else {
+                returnItem.setSaleAmount(java.math.BigDecimal.ZERO);
+            }
+            totalQuantity = totalQuantity.subtract(reqItem.getReturnQuantity());
+            totalAmount = totalAmount.add(returnItem.getSaleAmount());
+            returnItems.add(returnItem);
+        }
+
+        returnOrder.setTotalQuantity(totalQuantity);
+        returnOrder.setTotalAmount(totalAmount);
+        returnOrder.setPayableAmount(totalAmount);
+
+        // 5. 保存退货单
+        orderMapper.insert(returnOrder);
+
+        // 6. 保存退货明细
+        for (OrderItemDO returnItem : returnItems) {
+            returnItem.setOrderId(returnOrder.getId());
+            orderItemMapper.insert(returnItem);
+        }
+
+        // 记录操作日志
+        operationLogService.log("order", returnOrder.getId(), returnOrder.getOrderNo(),
+                "create_return", null, null, "创建退货单，关联原订单：" + originalOrder.getOrderNo());
+
+        return returnOrder.getId();
+    }
+
+    // ========== 打印模板选择（基于订单开票公司） ==========
+
+    /**
+     * 根据订单的开票公司获取公司全称
+     * invoiceCompany: 1=四川熙汇达鑫商贸有限公司  2=四川鸿恒盛供应链管理有限公司
+     */
+    private String getCompanyNameByInvoice(Integer invoiceCompany) {
+        if (invoiceCompany != null) {
+            switch (invoiceCompany) {
+                case 1:
+                    return "四川熙汇达鑫商贸有限公司";
+                case 2:
+                    return "四川鸿恒盛供应链管理有限公司";
+            }
+        }
+        return "四川鸿恒盛供应链管理有限公司";
+    }
+
+    /**
+     * 根据订单的开票公司获取文件名前缀
+     */
+    private String getFilePrefixByInvoice(Integer invoiceCompany) {
+        if (invoiceCompany != null) {
+            switch (invoiceCompany) {
+                case 1:
+                    return "熙汇达鑫";
+                case 2:
+                    return "鸿恒盛";
+            }
+        }
+        return "鸿恒盛";
     }
 
 }

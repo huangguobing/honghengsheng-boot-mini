@@ -19,6 +19,18 @@ public class ProductSpecRespVO {
     @Schema(description = "单位")
     private String unit;
 
+    @Schema(description = "材质", example = "304")
+    private String material;
+
+    @Schema(description = "品牌", example = "青山")
+    private String brand;
+
+    @Schema(description = "厂家")
+    private String manufacturer;
+
+    @Schema(description = "计量方式")
+    private String measurementType;
+
     @Schema(description = "状态")
     private Integer status;
 

@@ -60,8 +60,14 @@ public class OrderSaveReqVO {
     @Schema(description = "收货地址", example = "北京市朝阳区")
     private String address;
 
+    @Schema(description = "收货单位")
+    private String receivingUnit;
+
     @Schema(description = "备注", example = "加急订单")
     private String remark;
+
+    @Schema(description = "提货车号", example = "豫A6197J")
+    private String vehicleNo;
 
     @Schema(description = "发货费/运费", example = "30")
     private BigDecimal shippingFee;
@@ -71,6 +77,18 @@ public class OrderSaveReqVO {
 
     @Schema(description = "其他费用备注", example = "快递费")
     private String extraCostRemark;
+
+    @Schema(description = "项目/工地ID", example = "1")
+    private Long projectId;
+
+    @Schema(description = "开票公司: 1=熙汇达鑫 2=鸿恒盛", example = "1")
+    private Integer invoiceCompany;
+
+    @Schema(description = "是否有采购周期: 0=否 1=是", example = "0")
+    private Integer hasPurchaseCycle;
+
+    @Schema(description = "采购周期备注", example = "预计2周到货")
+    private String purchaseCycleNote;
 
     @Schema(description = "商品明细列表", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotEmpty(message = "商品明细不能为空")

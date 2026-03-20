@@ -4,6 +4,7 @@ import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderCostFillReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderSaveReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.order.vo.SubOrderSaveReqVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.customer.CustomerDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderItemDO;
@@ -148,6 +149,13 @@ public interface OrderService {
     void editOrderItems(@Valid OrderSaveReqVO editReqVO);
 
     /**
+     * 简单编辑订单商品（仅修改销售信息，不动关联数据）
+     *
+     * @param editReqVO 商品编辑请求（id + items + shippingFee + discountAmount）
+     */
+    void editOrderItemsSimple(@Valid OrderSaveReqVO editReqVO);
+
+    /**
      * 审核订单（通过）
      *
      * @param id 订单ID
@@ -161,6 +169,39 @@ public interface OrderService {
      * @param reason 拒绝原因
      */
     void rejectOrder(Long id, String reason);
+
+    // ========== 结算相关 ==========
+
+    /**
+     * 进入结算（已发货 → 结算中）
+     */
+    void enterSettlement(Long id);
+
+    /**
+     * 手动标记订单完成（结算中 → 已完成）
+     */
+    void completeOrder(Long id);
+
+    /**
+     * 检查并自动完成订单（应收应付全部结清时调用）
+     */
+    void checkAndAutoComplete(Long orderId);
+
+    /**
+     * 检查订单是否存在关联数据（采购单、付款计划、费用）
+     *
+     * @param id 订单编号
+     * @return true=有关联数据，false=无
+     */
+    boolean hasAssociatedData(Long id);
+
+    /**
+     * 清空订单关联数据（采购单、付款计划、费用），保留订单本身及明细
+     * 若已存在实收/实付记录则抛出异常拒绝清空
+     *
+     * @param id 订单编号
+     */
+    void clearAssociatedData(Long id);
 
     // ========== 打印导出相关 ==========
 
@@ -177,13 +218,33 @@ public interface OrderService {
                            List<OrderItemDO> items, String salesmanName,
                            HttpServletResponse response) throws IOException;
 
-    // ========== 付款相关 ==========
+    /**
+     * 生成订单进销项明细Excel（多Sheet）
+     *
+     * @param orderId 订单编号
+     * @param response HTTP响应对象
+     */
+    void generateDetailExcel(Long orderId, HttpServletResponse response) throws IOException;
+
+    // ========== 副订单相关 ==========
 
     /**
-     * 标注订单为已付款
+     * 创建副订单（B角色录入）
      *
-     * @param id 订单编号
+     * @param reqVO 副订单信息
+     * @return 副订单ID
      */
-    void markOrderAsPaid(Long id);
+    Long createSubOrder(@Valid SubOrderSaveReqVO reqVO);
+
+    // ========== 退货相关 ==========
+
+    /**
+     * 创建退货单
+     *
+     * @param orderId 原订单ID
+     * @param items 退货明细（orderItemId + returnQuantity）
+     * @return 退货单ID
+     */
+    Long createReturnOrder(Long orderId, List<cn.iocoder.stmc.module.erp.controller.admin.order.vo.ReturnOrderReqVO.ReturnItemVO> items);
 
 }

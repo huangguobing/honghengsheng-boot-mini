@@ -176,8 +176,61 @@ public class OrderDO extends BaseDO {
     private String address;
 
     /**
+     * 收货单位
+     */
+    private String receivingUnit;
+
+    /**
      * 备注
      */
     private String remark;
+
+    /**
+     * 提货车号
+     */
+    private String vehicleNo;
+
+    // ========== 鸿恒盛适配字段 ==========
+
+    /**
+     * 项目/工地ID
+     */
+    private Long projectId;
+
+    /**
+     * 开票公司: 1=熙汇达鑫 2=鸿恒盛
+     */
+    private Integer invoiceCompany;
+
+    /**
+     * 是否有采购周期: 0=否 1=是
+     */
+    private Integer hasPurchaseCycle;
+
+    /**
+     * 采购周期备注
+     */
+    private String purchaseCycleNote;
+
+    /**
+     * 原订单ID（退货单关联）
+     */
+    private Long parentOrderId;
+
+    /**
+     * 是否退货单: 0=否 1=是
+     */
+    private Integer isReturn;
+
+    /**
+     * 订单类别：0=主订单（默认） 1=副订单
+     * 这是数据隔离的核心标识，所有查询通过此字段区分主/副订单
+     */
+    private Integer orderCategory;
+
+    /**
+     * 副单录入状态：0=待录入 1=已录入（仅主订单使用）
+     */
+    private Integer subOrderStatus;
 
 }

@@ -23,6 +23,7 @@ CREATE TABLE `erp_product_spec` (
   `product_id` bigint NOT NULL COMMENT '产品编号',
   `spec` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '规格',
   `unit` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '单位',
+  `manufacturer` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '生产厂家',
   `status` tinyint NOT NULL DEFAULT 0 COMMENT '状态(0启用 1停用)',
   `sort` int NOT NULL DEFAULT 0 COMMENT '排序',
   `creator` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '创建者',

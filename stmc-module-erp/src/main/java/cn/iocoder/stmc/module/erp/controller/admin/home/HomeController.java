@@ -8,7 +8,12 @@ import cn.iocoder.stmc.module.erp.controller.admin.home.vo.OrderStatisticsVO;
 import cn.iocoder.stmc.module.erp.dal.mysql.customer.CustomerMapper;
 import cn.iocoder.stmc.module.erp.dal.mysql.order.OrderMapper;
 import cn.iocoder.stmc.module.erp.dal.mysql.paymentplan.PaymentPlanMapper;
+import cn.iocoder.stmc.module.erp.dal.mysql.purchase.PurchaseOrderMapper;
 import cn.iocoder.stmc.module.erp.dal.mysql.supplier.SupplierMapper;
+import cn.iocoder.stmc.module.erp.dal.mysql.voucher.VoucherMapper;
+import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.voucher.VoucherDO;
 import cn.iocoder.stmc.module.erp.enums.OrderStatusEnum;
 import cn.iocoder.stmc.module.erp.enums.PaymentPlanStatusEnum;
 import io.swagger.v3.oas.annotations.Operation;
@@ -25,6 +30,8 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
+import java.util.Arrays;
+import java.util.List;
 
 import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 
@@ -34,8 +41,10 @@ import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 @Validated
 public class HomeController {
 
-    /** 可以查看成本信息的角色编码：超级管理员、租户管理员、老板 */
-    private static final String[] COST_VIEW_ROLES = {"super_admin", "tenant_admin", "boss"};
+    /** 可以查看成本信息的角色编码：超级管理员、鸿恒盛 */
+    private static final String[] COST_VIEW_ROLES = {"super_admin", "honghengsheng"};
+    /** B角色编码 */
+    private static final String[] ROLE_B = {"xihuidaxin"};
 
     @Resource
     private CustomerMapper customerMapper;
@@ -48,6 +57,12 @@ public class HomeController {
 
     @Resource
     private PaymentPlanMapper paymentPlanMapper;
+
+    @Resource
+    private PurchaseOrderMapper purchaseOrderMapper;
+
+    @Resource
+    private VoucherMapper voucherMapper;
 
     @Resource
     private PermissionCommonApi permissionApi;
@@ -80,14 +95,18 @@ public class HomeController {
             respVO.setPendingPaymentPlanCount(null);
         }
 
+        // 根据角色确定订单类别
+        boolean isRoleB = permissionApi.hasAnyRoles(userId, ROLE_B);
+        Integer orderCategory = isRoleB ? 1 : 0;
+
         // 订单数：管理员看全部，业务员只看自己的
         Long salesmanId = isAdmin ? null : userId;
         respVO.setOrderCount(orderMapper.selectCountBySalesman(salesmanId));
 
         // ========== 待处理事项统计（仅管理员可见） ==========
         if (isAdmin) {
-            respVO.setPendingReviewOrderCount(orderMapper.selectCountByStatus(OrderStatusEnum.PENDING_REVIEW.getStatus()));
-            respVO.setPendingCostOrderCount(orderMapper.selectCountByStatus(OrderStatusEnum.PENDING_COST.getStatus()));
+            respVO.setPendingReviewOrderCount(orderMapper.selectCountByStatus(OrderStatusEnum.DRAFT.getStatus()));
+            respVO.setPendingCostOrderCount(orderMapper.selectCountByStatus(OrderStatusEnum.CONFIRMED.getStatus()));
         } else {
             respVO.setPendingReviewOrderCount(0L);
             respVO.setPendingCostOrderCount(0L);
@@ -97,29 +116,86 @@ public class HomeController {
         LocalDate today = LocalDate.now();
         LocalDateTime todayStart = today.atStartOfDay();
         LocalDateTime todayEnd = today.plusDays(1).atStartOfDay();
-        OrderStatisticsVO todayStats = orderMapper.selectStatisticsByDateRangeAndSalesman(todayStart, todayEnd, salesmanId);
+        OrderStatisticsVO todayStats = orderMapper.selectStatisticsByDateRangeAndSalesman(todayStart, todayEnd, salesmanId, orderCategory);
         fillStatistics(respVO, todayStats, "today");
 
         // ========== 本周统计 ==========
         LocalDate weekStart = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
         LocalDateTime weekStartTime = weekStart.atStartOfDay();
         LocalDateTime weekEndTime = weekStart.plusWeeks(1).atStartOfDay();
-        OrderStatisticsVO weekStats = orderMapper.selectStatisticsByDateRangeAndSalesman(weekStartTime, weekEndTime, salesmanId);
+        OrderStatisticsVO weekStats = orderMapper.selectStatisticsByDateRangeAndSalesman(weekStartTime, weekEndTime, salesmanId, orderCategory);
         fillStatistics(respVO, weekStats, "week");
 
         // ========== 本月统计 ==========
         LocalDate monthStart = today.withDayOfMonth(1);
         LocalDateTime monthStartTime = monthStart.atStartOfDay();
         LocalDateTime monthEndTime = monthStart.plusMonths(1).atStartOfDay();
-        OrderStatisticsVO monthStats = orderMapper.selectStatisticsByDateRangeAndSalesman(monthStartTime, monthEndTime, salesmanId);
+        OrderStatisticsVO monthStats = orderMapper.selectStatisticsByDateRangeAndSalesman(monthStartTime, monthEndTime, salesmanId, orderCategory);
         fillStatistics(respVO, monthStats, "month");
+
+        // ========== 本季度统计 ==========
+        int currentQuarter = (today.getMonthValue() - 1) / 3;
+        LocalDate quarterStart = today.withMonth(currentQuarter * 3 + 1).withDayOfMonth(1);
+        LocalDateTime quarterStartTime = quarterStart.atStartOfDay();
+        LocalDateTime quarterEndTime = quarterStart.plusMonths(3).atStartOfDay();
+        OrderStatisticsVO quarterStats = orderMapper.selectStatisticsByDateRangeAndSalesman(quarterStartTime, quarterEndTime, salesmanId, orderCategory);
+        fillStatistics(respVO, quarterStats, "quarter");
 
         // ========== 本年统计 ==========
         LocalDate yearStart = today.withDayOfYear(1);
         LocalDateTime yearStartTime = yearStart.atStartOfDay();
         LocalDateTime yearEndTime = yearStart.plusYears(1).atStartOfDay();
-        OrderStatisticsVO yearStats = orderMapper.selectStatisticsByDateRangeAndSalesman(yearStartTime, yearEndTime, salesmanId);
+        OrderStatisticsVO yearStats = orderMapper.selectStatisticsByDateRangeAndSalesman(yearStartTime, yearEndTime, salesmanId, orderCategory);
         fillStatistics(respVO, yearStats, "year");
+
+        // ========== 鸿恒盛适配指标（仅管理员） ==========
+        if (isAdmin) {
+            // 待收款 = 收款计划(type=1) 中待付款+逾期的 (planAmount - paidAmount) 汇总
+            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingReceivableQuery =
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO>()
+                            .eq(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getType, 1)
+                            .in(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getStatus,
+                                    PaymentPlanStatusEnum.PENDING.getStatus(), PaymentPlanStatusEnum.OVERDUE.getStatus());
+            List<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingReceivablePlans =
+                    paymentPlanMapper.selectList(pendingReceivableQuery);
+            BigDecimal pendingReceivable = BigDecimal.ZERO;
+            for (cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO p : pendingReceivablePlans) {
+                BigDecimal plan = p.getPlanAmount() != null ? p.getPlanAmount() : BigDecimal.ZERO;
+                BigDecimal paid = p.getPaidAmount() != null ? p.getPaidAmount() : BigDecimal.ZERO;
+                pendingReceivable = pendingReceivable.add(plan.subtract(paid));
+            }
+            respVO.setPendingReceivableAmount(pendingReceivable);
+
+            // 待付款 = 付款计划(type=0) 中待付款+逾期的 (planAmount - paidAmount) 汇总
+            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingPayableQuery =
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO>()
+                            .eq(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getType, 0)
+                            .in(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getStatus,
+                                    PaymentPlanStatusEnum.PENDING.getStatus(), PaymentPlanStatusEnum.OVERDUE.getStatus());
+            List<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingPayablePlans =
+                    paymentPlanMapper.selectList(pendingPayableQuery);
+            BigDecimal pendingPayable = BigDecimal.ZERO;
+            for (cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO p : pendingPayablePlans) {
+                BigDecimal plan = p.getPlanAmount() != null ? p.getPlanAmount() : BigDecimal.ZERO;
+                BigDecimal paid = p.getPaidAmount() != null ? p.getPaidAmount() : BigDecimal.ZERO;
+                pendingPayable = pendingPayable.add(plan.subtract(paid));
+            }
+            respVO.setPendingPayableAmount(pendingPayable);
+
+            // 本月采购单数
+            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PurchaseOrderDO> monthPurchaseQuery =
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PurchaseOrderDO>()
+                            .ge(PurchaseOrderDO::getCreateTime, monthStartTime)
+                            .lt(PurchaseOrderDO::getCreateTime, monthEndTime);
+            respVO.setMonthPurchaseOrderCount(purchaseOrderMapper.selectCount(monthPurchaseQuery));
+
+            // 未核销发票数
+            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VoucherDO> unrecQuery =
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VoucherDO>()
+                            .eq(VoucherDO::getReconcileStatus, 0)
+                            .in(VoucherDO::getVoucherType, Arrays.asList(1, 2));
+            respVO.setUnreconcileInvoiceCount(voucherMapper.selectCount(unrecQuery));
+        }
 
         // ========== 成本信息权限控制 ==========
         // 非管理员隐藏成本、毛利、净利润信息
@@ -157,6 +233,10 @@ public class HomeController {
         respVO.setMonthCostAmount(null);
         respVO.setMonthGrossProfit(null);
         respVO.setMonthNetProfit(null);
+        // 本季度
+        respVO.setQuarterCostAmount(null);
+        respVO.setQuarterGrossProfit(null);
+        respVO.setQuarterNetProfit(null);
         // 本年
         respVO.setYearCostAmount(null);
         respVO.setYearGrossProfit(null);
@@ -195,6 +275,13 @@ public class HomeController {
                 respVO.setMonthCostAmount(costAmount);
                 respVO.setMonthGrossProfit(grossProfit);
                 respVO.setMonthNetProfit(netProfit);
+                break;
+            case "quarter":
+                respVO.setQuarterOrderCount(orderCount);
+                respVO.setQuarterSalesAmount(salesAmount);
+                respVO.setQuarterCostAmount(costAmount);
+                respVO.setQuarterGrossProfit(grossProfit);
+                respVO.setQuarterNetProfit(netProfit);
                 break;
             case "year":
                 respVO.setYearOrderCount(orderCount);

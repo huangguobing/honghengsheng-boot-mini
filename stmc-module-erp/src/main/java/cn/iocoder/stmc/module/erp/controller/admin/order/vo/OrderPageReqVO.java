@@ -37,7 +37,19 @@ public class OrderPageReqVO extends PageParam {
     @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY_HOUR_MINUTE_SECOND)
     private LocalDateTime[] createTime;
 
+    @Schema(description = "开票公司", example = "1")
+    private Integer invoiceCompany;
+
+    @Schema(description = "项目ID", example = "1")
+    private Long projectId;
+
+    @Schema(description = "是否退货单", example = "0")
+    private Integer isReturn;
+
     @Schema(description = "业务员ID（数据权限过滤，内部使用）", hidden = true)
     private Long salesmanId;
+
+    @Schema(description = "订单类别：0=主订单 1=副订单（内部使用）", hidden = true)
+    private Integer orderCategory;
 
 }

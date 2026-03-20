@@ -17,6 +17,9 @@ public class OrderItemRespVO {
     @Schema(description = "订单ID", requiredMode = Schema.RequiredMode.REQUIRED, example = "1")
     private Long orderId;
 
+    @Schema(description = "明细类型（0商品 1费用）", example = "0")
+    private Integer itemType;
+
     // ========== 业务员填写字段（销售信息）==========
 
     @Schema(description = "商品名称", example = "衬塑钢卡")
@@ -39,6 +42,31 @@ public class OrderItemRespVO {
 
     @Schema(description = "销售备注", example = "45度")
     private String saleRemark;
+
+    // ========== 产品属性字段 ==========
+
+    @Schema(description = "材质", example = "304")
+    private String material;
+
+    @Schema(description = "品牌", example = "青山")
+    private String brand;
+
+    @Schema(description = "厂家", example = "天津友发")
+    private String manufacturer;
+
+    // ========== 发货/送货信息字段 ==========
+
+    @Schema(description = "重量（吨）", example = "2.5")
+    private BigDecimal weight;
+
+    @Schema(description = "长度（米）", example = "6")
+    private BigDecimal length;
+
+    @Schema(description = "总米数", example = "60")
+    private BigDecimal totalMeters;
+
+    @Schema(description = "车号", example = "豫A6197J")
+    private String vehicleNo;
 
     // ========== 管理员填写字段（采购成本信息）==========
 

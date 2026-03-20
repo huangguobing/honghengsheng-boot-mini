@@ -5,6 +5,10 @@ import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPag
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPreviewVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSaveReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.ReconcileSummaryVO;
+
+import javax.validation.Valid;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Collection;
@@ -55,6 +59,14 @@ public interface PaymentPlanService {
      * @return 付款计划列表
      */
     List<PaymentPlanDO> getPaymentPlansByPaymentId(Long paymentId);
+
+    /**
+     * 根据订单ID获取收付款计划列表
+     *
+     * @param orderId 订单ID
+     * @return 收付款计划列表
+     */
+    List<PaymentPlanDO> getPaymentPlansByOrderId(Long orderId);
 
     /**
      * 分页查询付款计划
@@ -131,4 +143,38 @@ public interface PaymentPlanService {
      * @param planIds 付款计划ID列表
      */
     void deleteNotificationsByPlanIds(Collection<Long> planIds);
+
+    // ========== 鸿恒盛扩展：灵活收付款计划 ==========
+
+    /**
+     * 创建收付款计划
+     */
+    Long createPaymentPlan(@Valid PaymentPlanSaveReqVO reqVO);
+
+    /**
+     * 更新收付款计划
+     */
+    void updatePaymentPlan(@Valid PaymentPlanSaveReqVO reqVO);
+
+    /**
+     * 删除收付款计划（只能删未付款的）
+     */
+    void deletePaymentPlan(Long id);
+
+    /**
+     * 部分付款
+     *
+     * @param id 计划编号
+     * @param amount 本次付款金额
+     * @param paymentMethod 收付方式
+     */
+    void partialPay(Long id, BigDecimal amount, Integer paymentMethod);
+
+    /**
+     * 对账汇总
+     *
+     * @param type 类型：0=应付（按供应商汇总） 1=应收（按客户汇总）
+     * @return 汇总列表
+     */
+    List<ReconcileSummaryVO> getReconcileSummary(Integer type);
 }

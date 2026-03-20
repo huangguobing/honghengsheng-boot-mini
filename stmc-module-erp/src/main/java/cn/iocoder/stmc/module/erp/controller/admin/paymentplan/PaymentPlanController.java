@@ -7,6 +7,8 @@ import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPreviewVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanRespVO;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSaveReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.ReconcileSummaryVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.customer.CustomerDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
@@ -26,6 +28,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
+import javax.validation.Valid;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.*;
@@ -54,6 +57,8 @@ public class PaymentPlanController {
     private OrderService orderService;
     @Resource
     private CustomerService customerService;
+    @Resource
+    private cn.iocoder.stmc.module.erp.service.project.ProjectService projectService;
 
     @GetMapping("/preview")
     @Operation(summary = "预览付款计划")
@@ -78,6 +83,17 @@ public class PaymentPlanController {
         return success(voPageResult);
     }
 
+    @GetMapping("/list-by-order")
+    @Operation(summary = "根据订单获取收付款计划列表")
+    @Parameter(name = "orderId", description = "订单编号", required = true)
+    @PreAuthorize("@ss.hasPermission('erp:payment-plan:query')")
+    public CommonResult<List<PaymentPlanRespVO>> getPaymentPlansByOrderId(@RequestParam("orderId") Long orderId) {
+        List<PaymentPlanDO> list = paymentPlanService.getPaymentPlansByOrderId(orderId);
+        List<PaymentPlanRespVO> voList = BeanUtils.toBean(list, PaymentPlanRespVO.class);
+        fillPaymentPlanInfo(voList);
+        return success(voList);
+    }
+
     @GetMapping("/list-by-payment")
     @Operation(summary = "获取付款单的付款计划列表")
     @Parameter(name = "paymentId", description = "付款单编号", required = true)
@@ -95,6 +111,50 @@ public class PaymentPlanController {
     public CommonResult<Boolean> markAsPaid(@RequestParam("id") @Parameter(description = "付款计划编号") Long id) {
         paymentPlanService.markAsPaid(id);
         return success(true);
+    }
+
+    // ========== 鸿恒盛扩展接口 ==========
+
+    @PostMapping("/create")
+    @Operation(summary = "创建收付款计划")
+    @PreAuthorize("@ss.hasPermission('erp:payment-plan:create')")
+    public CommonResult<Long> createPaymentPlan(@Valid @RequestBody PaymentPlanSaveReqVO reqVO) {
+        return success(paymentPlanService.createPaymentPlan(reqVO));
+    }
+
+    @PutMapping("/update")
+    @Operation(summary = "更新收付款计划")
+    @PreAuthorize("@ss.hasPermission('erp:payment-plan:update')")
+    public CommonResult<Boolean> updatePaymentPlan(@Valid @RequestBody PaymentPlanSaveReqVO reqVO) {
+        paymentPlanService.updatePaymentPlan(reqVO);
+        return success(true);
+    }
+
+    @DeleteMapping("/delete")
+    @Operation(summary = "删除收付款计划")
+    @Parameter(name = "id", description = "编号", required = true)
+    @PreAuthorize("@ss.hasPermission('erp:payment-plan:delete')")
+    public CommonResult<Boolean> deletePaymentPlan(@RequestParam("id") Long id) {
+        paymentPlanService.deletePaymentPlan(id);
+        return success(true);
+    }
+
+    @PutMapping("/partial-pay")
+    @Operation(summary = "部分付款")
+    @PreAuthorize("@ss.hasPermission('erp:payment-plan:pay')")
+    public CommonResult<Boolean> partialPay(@RequestParam("id") Long id,
+                                             @RequestParam("amount") BigDecimal amount,
+                                             @RequestParam(value = "paymentMethod", required = false) Integer paymentMethod) {
+        paymentPlanService.partialPay(id, amount, paymentMethod);
+        return success(true);
+    }
+
+    @GetMapping("/reconcile-summary")
+    @Operation(summary = "对账汇总")
+    @Parameter(name = "type", description = "类型：0=应付 1=应收", required = true)
+    @PreAuthorize("@ss.hasPermission('erp:payment-plan:query')")
+    public CommonResult<List<ReconcileSummaryVO>> getReconcileSummary(@RequestParam("type") Integer type) {
+        return success(paymentPlanService.getReconcileSummary(type));
     }
 
     /**
@@ -149,16 +209,28 @@ public class PaymentPlanController {
                 Collections.emptyMap() :
                 orderService.getOrderMap(orderIds);
 
-        // 6. 从订单中提取客户ID
+        // 6. 从订单和付款计划中提取客户ID
         Set<Long> customerIds = orderMap.values().stream()
                 .map(OrderDO::getCustomerId)
                 .filter(id -> id != null)
                 .collect(Collectors.toSet());
+        // 也收集付款计划中直接关联的客户ID（应收场景）
+        for (PaymentPlanRespVO vo : list) {
+            if (vo.getCustomerId() != null) {
+                customerIds.add(vo.getCustomerId());
+            }
+        }
 
         // 7. 批量查询客户
         Map<Long, CustomerDO> customerMap = CollUtil.isEmpty(customerIds) ?
                 Collections.emptyMap() :
                 customerService.getCustomerMap(customerIds);
+
+        // 7.5 收集并批量查询项目
+        Set<Long> projectIds = list.stream()
+                .map(PaymentPlanRespVO::getProjectId)
+                .filter(id -> id != null)
+                .collect(Collectors.toSet());
 
         // 8. 填充数据
         for (PaymentPlanRespVO vo : list) {
@@ -186,11 +258,26 @@ public class PaymentPlanController {
                 if (order != null) {
                     vo.setOrderNo(order.getOrderNo());
                     vo.setSalesmanName(order.getSalesmanName());
-                    // 从客户表获取客户名称
-                    if (order.getCustomerId() != null) {
+                    // 从客户表获取客户名称（仅当未直接设置客户名称时）
+                    if (vo.getCustomerName() == null && order.getCustomerId() != null) {
                         CustomerDO customer = customerMap.get(order.getCustomerId());
                         vo.setCustomerName(customer != null ? customer.getName() : null);
                     }
+                }
+            }
+
+            // 填充直接关联的客户名称（应收场景）
+            if (vo.getCustomerName() == null && vo.getCustomerId() != null) {
+                CustomerDO customer = customerMap.get(vo.getCustomerId());
+                vo.setCustomerName(customer != null ? customer.getName() : null);
+            }
+
+            // 填充项目名称
+            if (vo.getProjectId() != null) {
+                cn.iocoder.stmc.module.erp.dal.dataobject.project.ProjectDO project =
+                        projectService.getProject(vo.getProjectId());
+                if (project != null) {
+                    vo.setProjectName(project.getName());
                 }
             }
         }

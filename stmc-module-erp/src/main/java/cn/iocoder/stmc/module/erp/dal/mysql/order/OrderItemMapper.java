@@ -81,6 +81,7 @@ public interface OrderItemMapper extends BaseMapperX<OrderItemDO> {
             "  s.mobile as mobile, " +
             "  s.address as address, " +
             "  COALESCE(SUM(oi.purchase_amount), 0) as totalPurchaseAmount, " +
+            "  COALESCE(SUM(oi.weight), 0) as totalWeight, " +
             "  COUNT(*) as orderItemCount " +
             "FROM erp_order_item oi " +
             "LEFT JOIN erp_supplier s ON oi.supplier_id = s.id " +

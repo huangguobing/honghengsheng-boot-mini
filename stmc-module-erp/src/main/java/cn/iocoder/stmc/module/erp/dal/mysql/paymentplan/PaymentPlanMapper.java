@@ -25,8 +25,13 @@ public interface PaymentPlanMapper extends BaseMapperX<PaymentPlanDO> {
                 .eqIfPresent(PaymentPlanDO::getSupplierId, reqVO.getSupplierId())
                 .eqIfPresent(PaymentPlanDO::getStatus, reqVO.getStatus())
                 .inIfPresent(PaymentPlanDO::getStatus, reqVO.getStatusList())
+                .eqIfPresent(PaymentPlanDO::getType, reqVO.getType())
+                .eqIfPresent(PaymentPlanDO::getCustomerId, reqVO.getCustomerId())
+                .eqIfPresent(PaymentPlanDO::getProjectId, reqVO.getProjectId())
+                .eqIfPresent(PaymentPlanDO::getPaymentMethod, reqVO.getPaymentMethod())
+                .eqIfPresent(PaymentPlanDO::getOrderId, reqVO.getOrderId())
                 .betweenIfPresent(PaymentPlanDO::getPlanDate, reqVO.getPlanDateStart(), reqVO.getPlanDateEnd())
-                .last("ORDER BY FIELD(status, 20, 0, 10, 30), create_time DESC"));
+                .last("ORDER BY CASE WHEN status IN (0, 20) THEN 0 ELSE 1 END ASC, CASE WHEN status IN (0, 20) THEN id END DESC, id ASC"));
     }
 
     default List<PaymentPlanDO> selectListByPaymentId(Long paymentId) {
@@ -105,6 +110,35 @@ public interface PaymentPlanMapper extends BaseMapperX<PaymentPlanDO> {
     default List<PaymentPlanDO> selectListByOrderId(Long orderId) {
         return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
                 .eq(PaymentPlanDO::getOrderId, orderId));
+    }
+
+    /**
+     * 按客户查询付款计划（应收）
+     */
+    default List<PaymentPlanDO> selectListByCustomerId(Long customerId) {
+        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+                .eq(PaymentPlanDO::getCustomerId, customerId)
+                .orderByDesc(PaymentPlanDO::getId));
+    }
+
+    /**
+     * 按项目查询付款计划（应收）
+     */
+    default List<PaymentPlanDO> selectListByProjectId(Long projectId) {
+        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+                .eq(PaymentPlanDO::getProjectId, projectId)
+                .orderByDesc(PaymentPlanDO::getId));
+    }
+
+    /**
+     * 按类型查询未结清的付款计划（用于对账汇总，只统计待付款/已逾期，不含已付清和已取消）
+     */
+    default List<PaymentPlanDO> selectListByType(Integer type) {
+        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+                .eq(PaymentPlanDO::getType, type)
+                .in(PaymentPlanDO::getStatus,
+                        PaymentPlanStatusEnum.PENDING.getStatus(),
+                        PaymentPlanStatusEnum.OVERDUE.getStatus()));
     }
 
 }

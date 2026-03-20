@@ -104,6 +104,17 @@ public class PaymentController {
         return success(voPageResult);
     }
 
+    @GetMapping("/list-by-order")
+    @Operation(summary = "根据订单获取付款列表")
+    @Parameter(name = "orderId", description = "订单编号", required = true)
+    @PreAuthorize("@ss.hasPermission('erp:payment:query')")
+    public CommonResult<List<PaymentRespVO>> getPaymentListByOrderId(@RequestParam("orderId") Long orderId) {
+        List<PaymentDO> list = paymentService.getPaymentListByOrderId(orderId);
+        List<PaymentRespVO> voList = BeanUtils.toBean(list, PaymentRespVO.class);
+        fillPaymentInfo(voList);
+        return success(voList);
+    }
+
     @GetMapping("/unpaid-supplier-summary")
     @Operation(summary = "获得供应商未付款汇总")
     @PreAuthorize("@ss.hasPermission('erp:payment:query')")

@@ -98,4 +98,36 @@ public class PaymentPlanDO extends BaseDO {
      */
     private String remark;
 
+    // ========== 鸿恒盛扩展字段 ==========
+
+    /**
+     * 类型：0=应付（付供应商） 1=应收（收客户款）
+     */
+    private Integer type;
+
+    /**
+     * 关联采购单ID（应付时）
+     */
+    private Long purchaseOrderId;
+
+    /**
+     * 客户ID（应收时）
+     */
+    private Long customerId;
+
+    /**
+     * 项目ID（应收时）
+     */
+    private Long projectId;
+
+    /**
+     * 实际已付/已收金额（支持部分付款）
+     */
+    private BigDecimal paidAmount;
+
+    /**
+     * 收付方式：1=对公 2=对私 3=现金 4=微信 5=支付宝 6=承兑
+     */
+    private Integer paymentMethod;
+
 }

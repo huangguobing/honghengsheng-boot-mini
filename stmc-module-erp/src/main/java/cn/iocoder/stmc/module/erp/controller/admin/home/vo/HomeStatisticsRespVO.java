@@ -74,6 +74,23 @@ public class HomeStatisticsRespVO {
     @Schema(description = "本月净利", example = "36000.00")
     private BigDecimal monthNetProfit;
 
+    // ========== 本季度统计 ==========
+
+    @Schema(description = "本季度订单数", example = "200")
+    private Long quarterOrderCount;
+
+    @Schema(description = "本季度销售额", example = "500000.00")
+    private BigDecimal quarterSalesAmount;
+
+    @Schema(description = "本季度成本", example = "400000.00")
+    private BigDecimal quarterCostAmount;
+
+    @Schema(description = "本季度毛利", example = "100000.00")
+    private BigDecimal quarterGrossProfit;
+
+    @Schema(description = "本季度净利", example = "90000.00")
+    private BigDecimal quarterNetProfit;
+
     // ========== 本年统计 ==========
 
     @Schema(description = "本年订单数", example = "500")
@@ -98,6 +115,20 @@ public class HomeStatisticsRespVO {
 
     @Schema(description = "待填充成本订单数", example = "5")
     private Long pendingCostOrderCount;
+
+    // ========== 鸿恒盛适配指标 ==========
+
+    @Schema(description = "待收款金额")
+    private BigDecimal pendingReceivableAmount;
+
+    @Schema(description = "待付款金额")
+    private BigDecimal pendingPayableAmount;
+
+    @Schema(description = "本月采购单数")
+    private Long monthPurchaseOrderCount;
+
+    @Schema(description = "未核销发票数")
+    private Long unreconcileInvoiceCount;
 
     // ========== 权限标识 ==========
 

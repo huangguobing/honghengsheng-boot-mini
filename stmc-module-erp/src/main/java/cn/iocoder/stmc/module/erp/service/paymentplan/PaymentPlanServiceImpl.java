@@ -5,6 +5,8 @@ import cn.hutool.core.util.IdUtil;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPreviewVO;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSaveReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.ReconcileSummaryVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentterm.PaymentTermConfigDO;
@@ -80,6 +82,8 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     private cn.iocoder.stmc.module.erp.service.order.OrderService orderService;
     @Resource
     private cn.iocoder.stmc.module.system.service.user.AdminUserService adminUserService;
+    @Resource
+    private cn.iocoder.stmc.module.erp.service.customer.CustomerService customerService;
 
     @Override
     public List<PaymentPlanPreviewVO> previewPaymentPlans(Long supplierId, BigDecimal totalAmount, LocalDate paymentDate) {
@@ -206,6 +210,11 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     }
 
     @Override
+    public List<PaymentPlanDO> getPaymentPlansByOrderId(Long orderId) {
+        return paymentPlanMapper.selectListByOrderId(orderId);
+    }
+
+    @Override
     public PageResult<PaymentPlanDO> getPaymentPlanPage(PaymentPlanPageReqVO pageReqVO) {
         return paymentPlanMapper.selectPage(pageReqVO);
     }
@@ -222,12 +231,23 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         }
 
         plan.setStatus(PaymentPlanStatusEnum.PAID.getStatus());
+        plan.setPaidAmount(plan.getPlanAmount());
         plan.setActualAmount(plan.getPlanAmount());
         plan.setActualDate(LocalDateTime.now());
         paymentPlanMapper.updateById(plan);
 
+        // 更新订单已收/已付金额
+        if (plan.getOrderId() != null) {
+            orderService.updateOrderPaidAmount(plan.getOrderId(), plan.getPlanAmount());
+        }
+
         // 更新付款单状态
         paymentService.updatePaymentStatus(plan.getPaymentId());
+
+        // 检查订单是否可以自动完成
+        if (plan.getOrderId() != null) {
+            orderService.checkAndAutoComplete(plan.getOrderId());
+        }
     }
 
     @Override
@@ -585,6 +605,165 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         }
         int deleted = notifyMessageService.deleteByBusinessIds(planIds);
         log.info("[deleteNotificationsByPlanIds] 删除{}条通知，planIds:{}", deleted, planIds);
+    }
+
+    // ========== 鸿恒盛扩展：灵活收付款计划 ==========
+
+    @Override
+    public Long createPaymentPlan(PaymentPlanSaveReqVO reqVO) {
+        PaymentPlanDO plan = new PaymentPlanDO();
+        plan.setPlanNo(generatePlanNo());
+        plan.setType(reqVO.getType());
+        plan.setOrderId(reqVO.getOrderId());
+        plan.setPurchaseOrderId(reqVO.getPurchaseOrderId());
+        plan.setSupplierId(reqVO.getSupplierId());
+        plan.setCustomerId(reqVO.getCustomerId());
+        plan.setProjectId(reqVO.getProjectId());
+        plan.setPlanAmount(reqVO.getPlanAmount());
+        plan.setPaidAmount(reqVO.getPaidAmount() != null ? reqVO.getPaidAmount() : BigDecimal.ZERO);
+        plan.setPaymentMethod(reqVO.getPaymentMethod());
+        plan.setPlanDate(reqVO.getPlanDate());
+        plan.setRemark(reqVO.getRemark());
+        plan.setStage(1); // 灵活添加默认单期
+        plan.setActualAmount(BigDecimal.ZERO);
+        // 如果前端传入了 status（如直接标记为已付款），则使用该值，否则默认待付款
+        plan.setStatus(reqVO.getStatus() != null ? reqVO.getStatus() : PaymentPlanStatusEnum.PENDING.getStatus());
+        plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOT_NOTIFIED.getStatus());
+        paymentPlanMapper.insert(plan);
+        return plan.getId();
+    }
+
+    @Override
+    public void updatePaymentPlan(PaymentPlanSaveReqVO reqVO) {
+        PaymentPlanDO plan = paymentPlanMapper.selectById(reqVO.getId());
+        if (plan == null) {
+            throw exception(PAYMENT_PLAN_NOT_EXISTS);
+        }
+        PaymentPlanDO update = new PaymentPlanDO();
+        update.setId(reqVO.getId());
+        update.setType(reqVO.getType());
+        update.setOrderId(reqVO.getOrderId());
+        update.setPurchaseOrderId(reqVO.getPurchaseOrderId());
+        update.setSupplierId(reqVO.getSupplierId());
+        update.setCustomerId(reqVO.getCustomerId());
+        update.setProjectId(reqVO.getProjectId());
+        update.setPlanAmount(reqVO.getPlanAmount());
+        update.setPaymentMethod(reqVO.getPaymentMethod());
+        update.setPlanDate(reqVO.getPlanDate());
+        update.setRemark(reqVO.getRemark());
+        // 如果修改了已付款的计划，重置为待付款状态
+        if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
+            update.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
+            update.setPaidAmount(BigDecimal.ZERO);
+            update.setActualAmount(BigDecimal.ZERO);
+            update.setActualDate(null);
+        }
+        paymentPlanMapper.updateById(update);
+    }
+
+    @Override
+    public void deletePaymentPlan(Long id) {
+        PaymentPlanDO plan = paymentPlanMapper.selectById(id);
+        if (plan == null) {
+            throw exception(PAYMENT_PLAN_NOT_EXISTS);
+        }
+        // 允许删除任何状态的计划（包括已付款）
+        paymentPlanMapper.deleteById(id);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void partialPay(Long id, BigDecimal amount, Integer paymentMethod) {
+        PaymentPlanDO plan = paymentPlanMapper.selectById(id);
+        if (plan == null) {
+            throw exception(PAYMENT_PLAN_NOT_EXISTS);
+        }
+        if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
+            throw exception(PAYMENT_PLAN_ALREADY_PAID);
+        }
+
+        BigDecimal currentPaid = plan.getPaidAmount() != null ? plan.getPaidAmount() : BigDecimal.ZERO;
+        BigDecimal planAmount = plan.getPlanAmount() != null ? plan.getPlanAmount() : BigDecimal.ZERO;
+        BigDecimal remaining = planAmount.subtract(currentPaid);
+        if (amount.compareTo(remaining) > 0) {
+            throw exception(PAYMENT_PLAN_PARTIAL_PAY_EXCEEDS,
+                    planAmount, currentPaid, remaining, amount);
+        }
+
+        BigDecimal newPaid = currentPaid.add(amount);
+
+        PaymentPlanDO update = new PaymentPlanDO();
+        update.setId(id);
+        update.setPaidAmount(newPaid);
+        update.setPaymentMethod(paymentMethod);
+        update.setActualDate(LocalDateTime.now());
+
+        if (newPaid.compareTo(planAmount) >= 0) {
+            update.setStatus(PaymentPlanStatusEnum.PAID.getStatus());
+            update.setActualAmount(newPaid);
+        }
+        paymentPlanMapper.updateById(update);
+
+        // 如果已付清，检查订单是否可以自动完成
+        if (newPaid.compareTo(planAmount) >= 0 && plan.getOrderId() != null) {
+            orderService.checkAndAutoComplete(plan.getOrderId());
+        }
+    }
+
+    @Override
+    public List<ReconcileSummaryVO> getReconcileSummary(Integer type) {
+        List<PaymentPlanDO> plans = paymentPlanMapper.selectListByType(type);
+        if (CollUtil.isEmpty(plans)) {
+            return Collections.emptyList();
+        }
+
+        // 按目标ID分组：type=0 按供应商，type=1 按客户
+        Map<Long, List<PaymentPlanDO>> grouped;
+        if (Integer.valueOf(0).equals(type)) {
+            grouped = plans.stream()
+                    .filter(p -> p.getSupplierId() != null)
+                    .collect(Collectors.groupingBy(PaymentPlanDO::getSupplierId));
+        } else {
+            grouped = plans.stream()
+                    .filter(p -> p.getCustomerId() != null)
+                    .collect(Collectors.groupingBy(PaymentPlanDO::getCustomerId));
+        }
+
+        // 获取名称映射
+        Map<Long, String> nameMap = new HashMap<>();
+        if (Integer.valueOf(0).equals(type)) {
+            Map<Long, cn.iocoder.stmc.module.erp.dal.dataobject.supplier.SupplierDO> supplierMap =
+                    supplierService.getSupplierMap(grouped.keySet());
+            supplierMap.forEach((k, v) -> nameMap.put(k, v.getName()));
+        } else {
+            Map<Long, cn.iocoder.stmc.module.erp.dal.dataobject.customer.CustomerDO> customerMap =
+                    customerService.getCustomerMap(grouped.keySet());
+            customerMap.forEach((k, v) -> nameMap.put(k, v.getName()));
+        }
+
+        List<ReconcileSummaryVO> result = new ArrayList<>();
+        for (Map.Entry<Long, List<PaymentPlanDO>> entry : grouped.entrySet()) {
+            ReconcileSummaryVO vo = new ReconcileSummaryVO();
+            vo.setTargetId(entry.getKey());
+            vo.setTargetName(nameMap.getOrDefault(entry.getKey(), "未知"));
+            vo.setPlanCount(entry.getValue().size());
+
+            BigDecimal totalAmount = BigDecimal.ZERO;
+            BigDecimal paidAmount = BigDecimal.ZERO;
+            for (PaymentPlanDO p : entry.getValue()) {
+                if (p.getPlanAmount() != null) {
+                    totalAmount = totalAmount.add(p.getPlanAmount());
+                }
+                if (p.getPaidAmount() != null) {
+                    paidAmount = paidAmount.add(p.getPaidAmount());
+                }
+            }
+            vo.setTotalAmount(totalAmount);
+            vo.setPaidAmount(paidAmount);
+            vo.setUnpaidAmount(totalAmount.subtract(paidAmount));
+            result.add(vo);
+        }
+        return result;
     }
 
 }

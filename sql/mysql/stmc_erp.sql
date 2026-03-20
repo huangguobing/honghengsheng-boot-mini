@@ -1830,14 +1830,12 @@ INSERT INTO `system_menu` VALUES (5053, '付款修改', 'erp:payment:update', 3,
 INSERT INTO `system_menu` VALUES (5054, '标记已付款', 'erp:payment:pay', 3, 4, 5050, '', '', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-11 13:06:55', 'admin', '2026-01-11 13:06:55', b'0');
 INSERT INTO `system_menu` VALUES (5055, '付款删除', 'erp:payment:delete', 3, 5, 5050, '', '', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-11 13:06:55', 'admin', '2026-01-11 13:06:55', b'0');
 INSERT INTO `system_menu` VALUES (5056, '导出报表', 'erp:payment:export', 3, 6, 5050, '', '', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-11 13:06:55', 'admin', '2026-01-11 13:06:55', b'0');
-INSERT INTO `system_menu` VALUES (5060, '付款明细', '', 2, 55, 0, '/payment-plan', 'ep:calendar', 'erp/paymentPlan/index', 'ErpPaymentPlan', 0, b'1', b'1', b'1', 'admin', '2026-01-11 13:06:55', 'admin', '2026-01-13 01:35:59', b'0');
+INSERT INTO `system_menu` VALUES (5060, '收付款管理', '', 2, 55, 0, '/payment-plan', 'ep:calendar', 'erp/paymentPlan/index', 'ErpPaymentPlan', 0, b'1', b'1', b'1', 'admin', '2026-01-11 13:06:55', 'admin', '2026-01-13 01:35:59', b'0');
 INSERT INTO `system_menu` VALUES (5061, '付款计划查询', 'erp:payment-plan:query', 3, 1, 5060, '', '', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-11 13:06:55', 'admin', '2026-01-11 13:06:55', b'0');
 INSERT INTO `system_menu` VALUES (5062, '标记已付款', 'erp:payment-plan:pay', 3, 2, 5060, '', '', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-11 13:06:55', 'admin', '2026-01-11 13:06:55', b'0');
 INSERT INTO `system_menu` VALUES (5070, '统计报表', '', 1, 60, 0, '/statistics', 'ep:data-analysis', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-13 00:40:02', 'admin', '2026-01-13 00:40:02', b'0');
 INSERT INTO `system_menu` VALUES (5071, '供应商采购统计', '', 2, 1, 5070, 'supplier-purchase', '', 'erp/statistics/supplierPurchase/index', 'ErpSupplierPurchaseStatistics', 0, b'1', b'1', b'1', 'admin', '2026-01-13 00:40:02', 'admin', '2026-01-13 00:40:02', b'0');
 INSERT INTO `system_menu` VALUES (5072, '统计查询', 'erp:statistics:query', 3, 1, 5071, '', '', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-13 00:40:02', 'admin', '2026-01-13 00:40:02', b'0');
-INSERT INTO `system_menu` VALUES (5073, '员工业绩统计', '', 2, 3, 5070, 'salesman-sales', '', 'erp/statistics/salesmanSales/index', 'ErpSalesmanSalesStatistics', 0, b'1', b'1', b'1', 'admin', '2026-01-13 00:40:02', 'admin', '2026-01-13 02:39:08', b'0');
-INSERT INTO `system_menu` VALUES (5074, '统计查询', 'erp:statistics:query', 3, 1, 5073, '', '', '', '', 0, b'1', b'1', b'1', 'admin', '2026-01-13 00:40:02', 'admin', '2026-01-13 00:40:02', b'0');
 INSERT INTO `system_menu` VALUES (5075, '客户销售统计', 'erp:statistics:query', 2, 2, 5070, 'customerSales', '', 'erp/statistics/customerSales/index', 'ErpCustomerSalesStatistics', 0, b'1', b'1', b'1', '1', '2026-01-13 02:31:05', '1', '2026-01-13 02:37:58', b'0');
 INSERT INTO `system_menu` VALUES (5076, '订单编辑', 'erp:order:update', 2, 3, 0, '/order/edit/:id', '', 'erp/order/create', 'ErpOrderEdit', 0, b'0', b'1', b'0', '1', '2026-01-13 05:50:02', '1', '2026-01-13 06:37:38', b'0');
 

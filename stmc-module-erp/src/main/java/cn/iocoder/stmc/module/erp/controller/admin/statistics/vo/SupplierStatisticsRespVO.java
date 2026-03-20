@@ -30,6 +30,9 @@ public class SupplierStatisticsRespVO {
     @Schema(description = "采购总额", example = "100000.00")
     private BigDecimal totalPurchaseAmount;
 
+    @Schema(description = "总重量（吨）", example = "50.000")
+    private BigDecimal totalWeight;
+
     @Schema(description = "采购明细数", example = "50")
     private Long orderItemCount;
 

@@ -96,4 +96,10 @@ public class CustomerDO extends BaseDO {
      */
     private String remark;
 
+    /**
+     * 是否下级开单: 0=否 1=是
+     * 标记为1时，A角色创建的订单会自动推送给下级录入
+     */
+    private Integer needIntermediary;
+
 }

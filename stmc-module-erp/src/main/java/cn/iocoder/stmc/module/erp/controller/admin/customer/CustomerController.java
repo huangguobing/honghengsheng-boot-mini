@@ -1,11 +1,9 @@
 package cn.iocoder.stmc.module.erp.controller.admin.customer;
 
-import cn.iocoder.stmc.framework.common.biz.system.permission.PermissionCommonApi;
 import cn.iocoder.stmc.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.stmc.framework.common.pojo.CommonResult;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
-import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.customer.vo.CustomerPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.customer.vo.CustomerRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.customer.vo.CustomerSaveReqVO;
@@ -30,14 +28,8 @@ import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 @Validated
 public class CustomerController {
 
-    /** 管理员角色编码 */
-    private static final String[] ADMIN_ROLES = {"super_admin", "tenant_admin", "boss"};
-
     @Resource
     private CustomerService customerService;
-
-    @Resource
-    private PermissionCommonApi permissionApi;
 
     @PostMapping("/create")
     @Operation(summary = "创建客户")
@@ -85,11 +77,6 @@ public class CustomerController {
     @Operation(summary = "获得客户分页")
     @PreAuthorize("@ss.hasPermission('erp:customer:query')")
     public CommonResult<PageResult<CustomerRespVO>> getCustomerPage(@Valid CustomerPageReqVO pageVO) {
-        // 数据权限过滤：非管理员只能看到自己创建的客户
-        Long userId = SecurityFrameworkUtils.getLoginUserId();
-        if (!isAdmin(userId)) {
-            pageVO.setCreator(String.valueOf(userId));
-        }
         PageResult<CustomerDO> pageResult = customerService.getCustomerPage(pageVO);
         return success(BeanUtils.toBean(pageResult, CustomerRespVO.class));
     }
@@ -97,22 +84,9 @@ public class CustomerController {
     @GetMapping("/simple-list")
     @Operation(summary = "获得客户精简列表", description = "用于下拉选择")
     public CommonResult<List<CustomerRespVO>> getCustomerSimpleList() {
-        // 数据权限过滤：非管理员只能看到自己创建的客户
-        Long userId = SecurityFrameworkUtils.getLoginUserId();
-        String creator = isAdmin(userId) ? null : String.valueOf(userId);
         List<CustomerDO> list = customerService.getCustomerListByStatusAndCreator(
-                CommonStatusEnum.ENABLE.getStatus(), creator);
+                CommonStatusEnum.ENABLE.getStatus(), null);
         return success(BeanUtils.toBean(list, CustomerRespVO.class));
-    }
-
-    /**
-     * 判断是否为管理员
-     */
-    private boolean isAdmin(Long userId) {
-        if (userId == null) {
-            return false;
-        }
-        return permissionApi.hasAnyRoles(userId, ADMIN_ROLES);
     }
 
 }
