@@ -1,491 +1,328 @@
-# 尚泰铭成ERP管理系统 - 后端项目
+# 鸿恒盛供应链管理系统 - 后端项目
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-2.7.18-green.svg)](https://spring.io/projects/spring-boot)
-[![MyBatis Plus](https://img.shields.io/badge/MyBatis%20Plus-3.5.7-blue.svg)](https://mp.baomidou.com/)
+[![MyBatis Plus](https://img.shields.io/badge/MyBatis%20Plus-3.5.14-blue.svg)](https://baomidou.com/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0-blue.svg)](https://www.mysql.com/)
 
-> 基于芋道开源框架二次开发的企业级ERP管理系统后端项目
+> 基于芋道 `ruoyi-vue-pro` 二次开发的供应链 ERP 后端，面向钢材贸易场景，围绕订单、采购、结算、费用、附件、凭证和统计分析构建业务闭环。
 
-## 📖 项目简介
+## 项目简介
 
-**尚泰铭成ERP管理系统**是一个基于 [芋道 ruoyi-vue-pro](https://gitee.com/zhijiantianya/ruoyi-vue-pro) 二次开发的企业级ERP管理平台，专注于销售订单管理、采购付款管理和数据统计分析。
+**鸿恒盛供应链管理系统** 是一个面向供应链贸易场景的 ERP 管理平台。  
+当前系统的核心不是库存生产，而是围绕以下链路运转：
 
-### 🎯 核心功能
+`客户 / 项目 -> 主订单 -> 采购订单 -> 应收应付计划 -> 费用支出 -> 凭证 / 附件 -> 统计分析 -> 副订单 / 退换货调整`
 
-#### 1. 客户管理模块
-- 客户信息CRUD
-- 联系人管理
-- 客户销售历史查询
-- 数据导出
+项目保留了芋道原有的系统管理、基础设施、权限、日志、文件、定时任务等能力，并在 `stmc-module-erp` 中沉淀了当前业务的核心实现。
 
-#### 2. 供应商管理模块
-- 供应商信息CRUD
-- 账期配置（按月、按周期自定义）
+### 当前业务口径
+
+- 正式业务角色以 `super_admin / honghengsheng / xihuidaxin` 为准
+- `honghengsheng` 对应 A 角色，负责主订单经营闭环
+- `xihuidaxin` 对应 B 角色，负责基于主订单录入副订单 / 发货单
+- 代码中仍存在部分 `salesman` 字段与兼容分支，它们更多承担“录入人 / 创建人”语义，不再代表旧版项目里的正式角色体系
+
+## 核心功能
+
+### 1. 基础主数据
+
+- 客户管理：客户档案、联系人、项目关联、是否需要 B 角色录单等业务属性
+- 项目管理：支持项目 / 工地维度维护，是订单、统计、打印的重要归属字段
+- 产品管理：产品与规格维护，支撑订单行、采购行和统计分析
+- 供应商管理：供应商资料、账期配置、采购结算维度维护
+
+### 2. 订单管理
+
+- 主订单创建、编辑、详情查看、打印导出
+- 订单状态流转：草稿、已确认、已发货、结算中、已完成、已取消
+- 订单行明细维护，支持销售价、采购价、利润相关字段汇总
+- 副订单录入：B 角色可基于主订单生成副订单 / 发货单
+- 退货与调整流程：支持负数退货单和订单联动调整
+- 数据权限隔离：A 角色看主订单，B 角色看自己录入的副订单
+
+### 3. 采购与结算
+
+- 从销售订单拆分采购订单
+- 按供应商生成付款计划
+- 付款记录、对账汇总、结算状态联动
+- 成本变更后可重建相关支付计划，保持订单与结算数据一致
+
+### 4. 费用、凭证与附件
+
+- 费用支出管理：运费、吊装费、杂费等成本项录入
+- 凭证管理：票据 / 凭证数据维护
+- 订单附件管理：图片、合同、票据附件上传与归档
+- 操作日志时间线：围绕订单跟踪关键操作轨迹
+
+### 5. 首页与统计分析
+
+- 首页经营看板
+- 客户销售统计
 - 供应商采购统计
-- 数据导出
+- 项目利润统计
+- 产品销量统计
+- 应收应付统计
+- 开票汇总统计
 
-#### 3. 订单管理模块
-- **销售开单**：业务员快速创建销售订单
-- **订单审核**：多级审核流程（业务员 → Boss）
-- **成本填充**：订单完成后填充采购成本
-- **成本编辑**：Boss和管理员可二次编辑已填充的成本
-- **收款管理**：标注客户收款状态
-- **数据导出**：Excel格式导出订单数据
-- **订单详情**：查看订单完整信息
+### 6. 系统与基础设施
 
-#### 4. 采购付款管理模块
-- **自动生成付款单**：成本填充时按供应商自动生成
-- **付款计划**：根据供应商账期自动拆分付款阶段
-- **付款记录**：详细的付款历史追踪
-- **同步更新**：成本编辑时自动同步更新付款单
-
-#### 5. 统计报表模块
-- **客户销售统计**：按客户统计销售额和利润
-- **供应商采购统计**：按供应商统计采购成本
-- **员工业绩统计**：销售业绩排行榜
-
-#### 6. 系统管理模块
-- 用户管理（CRUD、导入导出）
-- 角色权限管理（菜单权限、数据权限）
-- 部门管理（树形结构）
-- 岗位管理
-- 字典管理
-- 操作日志
-- 登录日志
-- 文件管理
-- 定时任务
+- 用户、角色、菜单、部门、岗位、字典管理
+- 登录日志、操作日志、API 日志
+- 文件配置、文件上传、代码生成、定时任务、Redis 监控
+- Knife4j / Swagger 接口文档
 
 ---
 
-## 🔨 二次开发说明
+## 二次开发说明
 
-### 相比芋道源码的主要改动
+### 相比上游项目的主要调整
 
-#### 1. 精简模块
+#### 1. 聚焦供应链 ERP 主线
 
-删除了以下不需要的模块，减少系统复杂度和资源占用：
+当前项目把重心放在真实业务闭环，ERP 相关能力集中在以下模块：
 
-- ❌ **AI模块** (`stmc-module-ai`)：聊天、写作、绘图、音乐、思维导图等
-- ❌ **BPM工作流模块** (`stmc-module-bpm`)：流程设计器、流程审批、任务管理等
-- ❌ **CRM模块** (`stmc-module-crm`)：线索、客户、商机、合同等（使用自定义简化版客户管理）
-- ❌ **商城模块** (`stmc-module-mall`)：商品、订单、营销、优惠券等
-- ❌ **会员模块** (`stmc-module-member`)：会员管理、等级、积分、签到等
-- ❌ **支付模块** (`stmc-module-pay`)：支付宝/微信支付集成
-- ❌ **IoT物联网模块** (`stmc-module-iot`)：设备管理、产品管理、数据采集等
-- ❌ **公众号模块** (`stmc-module-mp`)：微信公众号、粉丝管理、消息推送等
-- ❌ **租户管理**：SaaS多租户功能（单租户场景）
-- ❌ **数据报表**：报表设计器、大屏设计器（暂不需要）
+- `customer`
+- `project`
+- `product`
+- `supplier`
+- `order`
+- `purchase`
+- `payment`
+- `paymentplan`
+- `expense`
+- `voucher`
+- `orderattachment`
+- `statistics`
+- `log`
 
-#### 2. 简化登录流程
+#### 2. 强化双角色业务模型
 
-**Controller层简化**：
-- ❌ 移除手机号登录接口 (`smsLogin`)
-- ❌ 移除社交授权登录接口 (`socialLogin`)
-- ❌ 移除注册接口 (`register`)
-- ❌ 移除发送短信验证码接口 (`sendSmsCode`)
-- ✅ 保留账号密码登录 (`login`)
-- ✅ 保留刷新令牌 (`refreshToken`)
-- ✅ 保留登出 (`logout`)
+- A 角色维护主订单经营数据
+- B 角色从“待录入副订单”入口补录副订单 / 发货单
+- 首页、订单列表、统计口径均按角色区分主订单与副订单
+- 部分历史“业务员”逻辑仍保留在字段层和兼容判断中，但不再作为 README 的主业务口径
 
-#### 3. 核心ERP功能开发
+#### 3. 新增当前版本核心能力
 
-##### 订单管理增强
-
-**新增接口**：
-- 🆕 `PUT /erp/order/edit-cost`：编辑订单成本（Boss和管理员）
-  - 权限：`erp:order:edit-cost`
-  - 业务逻辑：更新订单成本 + 物理删除旧付款记录 + 重新生成付款单
-
-**业务流程优化**：
-```
-待审核(0) → 待填充成本(10) → 已完成(20)
-                    ↓              ↓
-              自动生成付款单      成本可随时编辑
-                                  ↓
-                            付款单同步更新
-```
-
-**关键Service方法**：
-- `OrderServiceImpl.editOrderCost()`：成本编辑核心逻辑
-  - 校验订单状态（必须为已完成）
-  - 校验成本已填充
-  - 校验供应商付款一致性
-  - 更新订单明细成本
-  - 更新订单汇总成本
-  - 物理删除旧付款计划和付款单
-  - 按新成本重新生成付款单
-
-##### 付款管理自动化
-
-**核心机制**：
-- 🆕 **自动生成付款单**：成本填充时按供应商分组自动创建
-  - `PaymentServiceImpl.createPaymentFromCostFill()`
-  - 每个供应商生成一个付款单
-  - 聚合该供应商所有商品的采购金额
-
-- 🆕 **付款计划拆分**：根据供应商账期配置自动分期
-  - `PaymentPlanServiceImpl.createSinglePaymentPlan()`
-  - 支持单期付款（当前实现）
-  - 预留多期付款扩展能力
-
-- 🆕 **同步更新机制**：成本编辑时物理删除并重新生成
-  - `PaymentMapper.deleteByOrderId()`
-  - `PaymentPlanMapper.deleteByOrderId()`
-  - 保证付款数据与订单成本强一致
-
-- 🆕 **强一致性校验**：同供应商商品付款信息必须一致
-  - 前端实现，后端信任前端数据
-  - 同一供应商的所有商品：付款日期、付款状态、备注必须相同
-
-##### 统计报表
-
-**新增统计接口**：
-- 🆕 `GET /erp/statistics/customer-sales`：客户销售统计
-  - 按客户聚合销售额、成本、利润
-  - 支持日期范围筛选
-  - 支持导出Excel
-
-- 🆕 `GET /erp/statistics/supplier-purchase`：供应商采购统计
-  - 按供应商聚合采购金额
-  - 支持日期范围筛选
-  - 支持导出Excel
-
-- 🆕 `GET /erp/statistics/employee-sales`：员工业绩统计
-  - 按业务员统计销售业绩
-  - 销售排名、业绩对比
-  - 支持导出Excel
-
-#### 4. Bug修复
-
-**日期格式兼容性**：
-- 🐛 修复后端返回日期数组格式 `[2026, 1, 15]` 导致前端日期选择器报错
-- ✅ 统一使用字符串格式 `"2026-01-15"` 返回给前端
-- ✅ 兼容数组和字符串两种格式的输入
-
-**付款日期默认值**：
-- 🐛 修复付款日期为null时的数据库约束错误
-- ✅ 添加默认值处理逻辑
-
-**文案优化**：
-- 🎨 订单模块："付款状态" → "收款状态"（明确订单是收款，采购才是付款）
-- 🎨 状态枚举："已付款/未付款" → "已收款/未收款"
+- 项目管理模块
+- 采购订单模块
+- 费用支出模块
+- 凭证模块
+- 订单附件模块
+- 副订单录入与关联展示
+- 订单操作日志时间线
+- 项目利润 / 产品销量 / 应收应付 / 开票汇总等统计接口
+- 成本与付款计划联动重构
 
 ---
 
-## 💻 技术栈
+## 技术栈
 
 ### 核心框架
 
-| 框架                                                          | 说明                  | 版本      |
-|-------------------------------------------------------------|---------------------|---------|
-| [Spring Boot](https://spring.io/projects/spring-boot)       | 应用开发框架              | 2.7.18  |
-| [MyBatis Plus](https://mp.baomidou.com/)                    | MyBatis 增强工具包       | 3.5.7   |
-| [Spring Security](https://spring.io/projects/spring-security) | 安全框架                | 5.7.11  |
-| [Redis](https://redis.io/)                                  | 缓存数据库               | 6.0+    |
-| [MySQL](https://www.mysql.com/)                             | 关系型数据库              | 8.0+    |
-| [Druid](https://github.com/alibaba/druid)                   | 数据库连接池              | 1.2.23  |
-| [Redisson](https://github.com/redisson/redisson)            | Redis客户端           | 3.32.0  |
-| [Hibernate Validator](https://hibernate.org/validator/)      | 参数校验框架              | 6.2.5   |
-| [Springdoc](https://springdoc.org/)                         | API文档（Swagger）      | 1.7.0   |
-| [MapStruct](https://mapstruct.org/)                         | Java Bean转换        | 1.6.3   |
-| [Lombok](https://projectlombok.org/)                        | 简化Java代码           | 1.18.34 |
-| [Hutool](https://hutool.cn/)                                | Java工具库            | 5.8.25  |
-| [Guava](https://github.com/google/guava)                    | Google工具库          | 33.2.1  |
+| 框架 | 说明 | 版本 |
+|---|---|---|
+| Spring Boot | 应用开发框架 | 2.7.18 |
+| MyBatis Plus | ORM 增强框架 | 3.5.14 |
+| MyBatis Plus Join | 联表查询扩展 | 1.5.4 |
+| Spring Security | 认证授权 | 5.7.x |
+| MySQL | 关系型数据库 | 8.0+ |
+| Redis | 缓存与分布式能力 | 6.0+ |
+| Druid | 数据源连接池 | 1.2.27 |
+| Redisson | Redis 客户端 | 3.52.0 |
+| Springdoc | OpenAPI 文档 | 1.8.0 |
+| Knife4j | Swagger 增强文档 | 4.5.0 |
+| MapStruct | Bean 转换 | 1.6.3 |
+| Lombok | Java 代码简化 | 1.18.42 |
+| Hutool | Java 工具库 | 5.8.41 |
+| Guava | 通用工具库 | 33.5.0-jre |
 
 ### 项目模块
 
-| 模块                      | 说明                    |
-|-------------------------|------------------------|
-| `stmc-dependencies`    | Maven依赖版本管理          |
-| `stmc-framework`       | 框架扩展（安全、数据库、Redis等）  |
-| `stmc-server`          | 启动类和配置               |
-| `stmc-module-system`   | 系统管理模块（用户、角色、菜单、字典等） |
-| `stmc-module-infra`    | 基础设施模块（文件、配置、定时任务等） |
-| `stmc-module-erp`      | ERP核心模块（订单、客户、供应商等） |
+| 模块 | 说明 |
+|---|---|
+| `stmc-dependencies` | Maven 版本与依赖统一管理 |
+| `stmc-framework` | 框架扩展、公共 starter 与基础能力 |
+| `stmc-module-system` | 系统管理模块 |
+| `stmc-module-infra` | 基础设施模块 |
+| `stmc-module-erp` | 当前项目核心业务模块 |
+| `stmc-server` | 启动类与运行配置 |
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 环境要求
 
-- **JDK**：8 或 11+
-- **Maven**：3.6+
-- **MySQL**：8.0+
-- **Redis**：6.0+
-- **Node.js**：16.18+ （前端项目）
+- JDK 8+
+- Maven 3.6+
+- MySQL 8.0+
+- Redis 6.0+
 
-### 安装步骤
-
-#### 1. 克隆项目
+### 1. 克隆项目
 
 ```bash
-git clone https://github.com/huangguobing/stmc-boot-mini.git
-cd stmc-boot-mini
+git clone https://github.com/huangguobing/honghengsheng-boot-mini.git
+cd honghengsheng-boot-mini
 ```
 
-#### 2. 创建数据库
+### 2. 初始化数据库
 
-```sql
--- 创建数据库
-CREATE DATABASE IF NOT EXISTS `stmc_erp` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
+推荐两种方式二选一：
 
-#### 3. 导入SQL脚本
+- 方式一：直接导入完整库 `sql/mysql/stmc_erp_full.sql`
+- 方式二：先导入基础库 `sql/mysql/stmc_erp.sql`，再根据数据库版本补充执行增量脚本
 
-按顺序执行 `sql/mysql/` 目录下的脚本：
+常见增量脚本包括：
+
+- `sql/mysql/2026-03-07-cost-payment-redesign.sql`
+- `sql/mysql/2026-03-15-dual-role-sub-order.sql`
+- `sql/mysql/order_attachment.sql`
+- `sql/mysql/product_management.sql`
+- `sql/mysql/extra_cost.sql`
+
+### 3. 修改本地配置
+
+本地开发默认读取：
+
+- `stmc-server/src/main/resources/application.yaml`
+- `stmc-server/src/main/resources/application-local.yaml`
+
+至少需要确认这些配置：
+
+- MySQL 数据源
+- Redis 连接
+- 文件存储配置
+- 第三方服务密钥和回调地址
+
+### 4. 编译并运行
 
 ```bash
-# 1. 基础表结构和数据
-sql/mysql/stmc-erp-data.sql
-
-# 2. 权限脚本（如果需要）
-sql/mysql/add_order_edit_cost_permission.sql
-```
-
-#### 4. 修改配置
-
-编辑 `stmc-server/src/main/resources/application-dev.yaml`：
-
-```yaml
-spring:
-  # 数据库配置
-  datasource:
-    url: jdbc:mysql://localhost:3306/stmc_erp?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
-    username: root
-    password: 你的数据库密码
-
-  # Redis配置
-  redis:
-    host: localhost
-    port: 6379
-    password: 你的Redis密码（如果有）
-```
-
-#### 5. 编译运行
-
-**使用Maven**：
-
-```bash
-# 编译打包
+# 编译
 mvn clean package -DskipTests
 
-# 运行
+# 启动
 java -jar stmc-server/target/stmc-server.jar
 ```
 
-**使用IDE**：
+也可以直接在 IDE 中运行：
 
-1. 导入Maven项目
-2. 找到 `StmcServerApplication.java`
-3. 右键运行
+```text
+stmc-server/src/main/java/cn/iocoder/stmc/server/StmcServerApplication.java
+```
 
-#### 6. 访问系统
+### 5. 访问地址
 
-- **后端地址**：http://localhost:48080
-- **API文档**：http://localhost:48080/doc.html
-- **默认账号**：
-  - 超级管理员：`admin / admin123`
-  - Boss角色：`boss / admin123`
-  - 业务员：`salesman / admin123`
+- 后端服务：`http://localhost:48080`
+- 接口文档：`http://localhost:48080/doc.html`
+- Swagger UI：`http://localhost:48080/swagger-ui/index.html`
+
+默认初始化账号请以实际导入的数据库数据为准。  
+当前项目文档口径建议重点关注以下角色编码：
+
+- `super_admin`
+- `honghengsheng`
+- `xihuidaxin`
 
 ---
 
-## 📁 项目结构
+## 项目结构
 
-```
-stmc-boot-mini/
-├── sql/                                # SQL脚本
-│   └── mysql/
-│       ├── stmc-erp-data.sql          # 基础数据
-│       └── deployment_*.sql            # 部署脚本
+```text
+honghengsheng-boot-mini/
+├── docs/                               # 后端设计与重构文档
+├── sql/
+│   └── mysql/                          # MySQL 初始化与增量脚本
 ├── stmc-dependencies/                  # 依赖版本管理
-├── stmc-framework/                     # 框架扩展
-│   ├── stmc-common/                   # 通用工具
-│   ├── stmc-spring-boot-starter-biz-data-permission/   # 数据权限
-│   ├── stmc-spring-boot-starter-biz-dict/              # 字典
-│   ├── stmc-spring-boot-starter-biz-operatelog/        # 操作日志
-│   ├── stmc-spring-boot-starter-biz-tenant/            # 多租户（已禁用）
-│   ├── stmc-spring-boot-starter-mybatis/               # MyBatis
-│   ├── stmc-spring-boot-starter-redis/                 # Redis
-│   ├── stmc-spring-boot-starter-security/              # 安全
-│   └── stmc-spring-boot-starter-web/                   # Web
-├── stmc-module-system/                 # 系统管理模块
-│   ├── stmc-module-system-api/        # API接口定义
-│   └── stmc-module-system-biz/        # 业务实现
-│       ├── controller/admin/           # Controller层
-│       │   ├── auth/                   # 认证授权
-│       │   ├── dept/                   # 部门管理
-│       │   ├── dict/                   # 字典管理
-│       │   ├── logger/                 # 日志管理
-│       │   ├── permission/             # 权限管理
-│       │   └── user/                   # 用户管理
-│       ├── service/                    # Service层
-│       └── dal/mysql/                  # Mapper层
-├── stmc-module-infra/                  # 基础设施模块
-│   ├── stmc-module-infra-api/
-│   └── stmc-module-infra-biz/
-│       ├── controller/admin/
-│       │   ├── config/                 # 配置管理
-│       │   ├── file/                   # 文件管理
-│       │   └── job/                    # 定时任务
-│       ├── service/
-│       └── dal/mysql/
-├── stmc-module-erp/                    # ERP核心模块
-│   ├── stmc-module-erp-api/
-│   └── stmc-module-erp-biz/
-│       ├── controller/admin/
-│       │   ├── customer/               # 客户管理
-│       │   ├── supplier/               # 供应商管理
-│       │   ├── order/                  # 订单管理
-│       │   │   ├── OrderController.java        # 订单CRUD、审核、成本填充/编辑
-│       │   │   └── OrderItemController.java    # 订单明细
-│       │   ├── payment/                # 付款管理
-│       │   ├── paymentPlan/            # 付款计划
-│       │   └── statistics/             # 统计报表
-│       ├── service/
-│       │   ├── order/
-│       │   │   ├── OrderService.java
-│       │   │   └── OrderServiceImpl.java       # 订单核心业务逻辑
-│       │   ├── payment/
-│       │   │   └── PaymentServiceImpl.java     # 付款单自动生成
-│       │   └── paymentplan/
-│       │       └── PaymentPlanServiceImpl.java # 付款计划自动拆分
-│       ├── dal/mysql/
-│       │   ├── order/
-│       │   │   ├── OrderMapper.java
-│       │   │   └── OrderItemMapper.java
-│       │   ├── payment/
-│       │   │   ├── PaymentMapper.java          # 新增deleteByOrderId()
-│       │   │   └── PaymentPlanMapper.java      # 新增deleteByOrderId()
-│       │   └── ...
-│       └── enums/
-│           ├── ErrorCodeConstants.java         # 错误码定义
-│           └── order/
-│               └── OrderStatusEnum.java        # 订单状态枚举
-└── stmc-server/                        # 启动类
-    ├── src/main/resources/
-    │   ├── application.yaml            # 主配置
-    │   ├── application-dev.yaml        # 开发环境
-    │   └── application-prod.yaml       # 生产环境
-    └── StmcServerApplication.java     # 启动类
+├── stmc-framework/                     # 通用框架能力
+├── stmc-module-system/                 # 系统管理
+├── stmc-module-infra/                  # 基础设施
+├── stmc-module-erp/                    # ERP 核心业务
+│   └── src/main/java/.../controller/admin/
+│       ├── customer/                   # 客户
+│       ├── project/                    # 项目
+│       ├── product/                    # 产品
+│       ├── supplier/                   # 供应商
+│       ├── order/                      # 主订单 / 副订单 / 打印
+│       ├── purchase/                   # 采购订单
+│       ├── payment/                    # 付款记录
+│       ├── paymentplan/                # 付款计划
+│       ├── expense/                    # 费用支出
+│       ├── voucher/                    # 凭证
+│       ├── orderattachment/            # 订单附件
+│       ├── statistics/                 # 统计分析
+│       └── log/                        # 业务操作日志
+└── stmc-server/                        # 启动模块
 ```
 
-**生产环境Docker部署**：
-- MySQL容器：`stmc-mysql`
-- Redis容器：`stmc-redis`
-- 后端容器：`stmc-server`
-- 前端容器：`stmc-ui`
+---
+
+## 角色说明
+
+### 1. `super_admin`
+
+- 平台级管理员
+- 拥有系统配置、角色权限、基础设施维护能力
+- 可查看全量主订单数据
+
+### 2. `honghengsheng`
+
+- A 角色，主业务操作主体
+- 负责客户、项目、产品、供应商、主订单、采购、费用、凭证、统计等完整经营链路
+- 可查看主订单视角的经营结果与利润数据
+
+### 3. `xihuidaxin`
+
+- B 角色，中间商 / 副订单录入主体
+- 负责基于主订单补录副订单 / 发货单
+- 默认只看副订单，且只看自己录入的数据
 
 ---
 
-## 📝 开发规范
+## 开发建议
 
-### 代码规范
+### 文档优先阅读
 
-- 遵循《阿里巴巴Java开发手册》
-- Controller层：仅处理HTTP请求，调用Service
-- Service层：业务逻辑实现，事务控制
-- Mapper层：数据访问，使用MyBatis-Plus
-- VO/DTO：使用MapStruct进行Bean转换
-- 异常处理：使用全局异常处理器
-- 日志规范：使用Slf4j，区分info/warn/error
+如需快速理解本轮业务改造，建议先看：
 
-### 数据库规范
+- `docs/plans/2026-03-07-cost-payment-redesign.md`
+- `docs/plans/2026-03-07-cost-payment-redesign-design.md`
 
-- 表名：`模块_表名`（如 `erp_order`）
-- 字段命名：驼峰转下划线（如 `totalAmount` → `total_amount`）
-- 主键：统一使用 `id` BIGINT
-- 软删除：使用 `deleted` TINYINT（0=未删除，1=已删除）
-- 审计字段：`creator`、`create_time`、`updater`、`update_time`
-- 租户字段：`tenant_id`（当前未启用）
+### 联调重点
 
-### Git提交规范
-
-```
-<type>(<scope>): <subject>
-
-<body>
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
-```
-
-**Type类型**：
-- `feat`: 新功能
-- `fix`: Bug修复
-- `docs`: 文档更新
-- `style`: 代码格式调整
-- `refactor`: 代码重构
-- `perf`: 性能优化
-- `test`: 测试相关
-- `chore`: 构建/工具链相关
+- 订单状态口径是否与前端一致
+- A / B 角色的数据隔离是否符合预期
+- 成本、采购、付款计划、费用、统计之间是否保持联动
+- 副订单是否只在 B 角色口径下展示
 
 ---
 
-## 🐛 已知问题
+## 更新记录
 
-暂无
+### 2026-03
 
----
-
-## 📅 更新日志
-
-### v1.2.0 (2026-01-15)
-
-**新增功能**：
-- 🆕 订单成本编辑功能（`editOrderCost` API）
-- 🆕 付款单物理删除+重新生成机制
-- 🆕 Mapper层添加 `deleteByOrderId()` 方法
-- 🆕 统计报表功能（客户销售、供应商采购、员工业绩）
-
-**Bug修复**：
-- 🐛 修复日期格式兼容性问题（支持数组和字符串格式）
-- 🐛 修复付款日期默认值错误
-
-**文案优化**：
-- 🎨 "付款状态" → "收款状态"
-- 🎨 状态枚举调整
-
-**模块清理**：
-- 🗑️ 删除AI、BPM、CRM、商城、支付、会员等未使用模块
-
-### v1.1.0 (2026-01-13)
-
-- 🆕 客户销售统计功能
-- 🆕 供应商账期配置
-- 🆕 付款计划自动拆分
-
-### v1.0.0 (2026-01-11)
-
-- 🎉 基于芋道框架完成初始开发
-- ✅ 客户管理模块
-- ✅ 供应商管理模块
-- ✅ 订单管理模块
-- ✅ 付款管理模块
-- ✅ 系统管理模块
+- 完成成本与付款计划链路重构
+- 引入项目、采购订单、费用支出、凭证、订单附件等模块
+- 增加副订单双角色流程
+- 扩展项目利润、产品销量、应收应付、开票汇总等统计能力
+- 强化首页看板与订单口径联动
 
 ---
 
-## 📄 开源协议
+## 开源协议
 
-本项目基于 [Apache License 2.0](https://opensource.org/licenses/Apache-2.0) 开源协议
-
----
-
-## 🙏 致谢
-
-感谢 [芋道源码](https://gitee.com/zhijiantianya/ruoyi-vue-pro) 提供的优秀开源框架！
+本项目基于 [Apache License 2.0](https://opensource.org/licenses/Apache-2.0) 开源。
 
 ---
 
-## ⭐ Star History
+## 致谢
 
-如果这个项目对你有帮助，请给个 Star ⭐ 支持一下！
+感谢 [芋道源码 ruoyi-vue-pro](https://gitee.com/zhijiantianya/ruoyi-vue-pro) 提供的基础框架能力。
 
 ---
 
-## 🔗 相关项目
+## 相关项目
 
-- **前端项目**：[stmc-ui-admin-vue3](https://github.com/huangguobing/stmc-ui-admin-vue3)
-- **芋道源码**：[ruoyi-vue-pro](https://gitee.com/zhijiantianya/ruoyi-vue-pro)
+- 前端项目：https://github.com/huangguobing/honghengsheng-ui-admin-vue3
+- 上游后端项目：https://gitee.com/zhijiantianya/ruoyi-vue-pro
