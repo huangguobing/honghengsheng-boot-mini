@@ -3,6 +3,7 @@ package cn.iocoder.stmc.module.erp.service.voucher;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.module.erp.controller.admin.voucher.vo.VoucherPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.voucher.vo.VoucherSaveReqVO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.voucher.VoucherDO;
 
 import javax.validation.Valid;
@@ -28,5 +29,11 @@ public interface VoucherService {
     List<VoucherDO> getVoucherListByOrderId(Long orderId);
 
     void reconcileVoucher(Long id, Integer reconcileStatus, String reconcileRemark);
+
+    void createAutoVoucherFromPlan(PaymentPlanDO plan);
+
+    void syncAutoVouchersFromPlan(PaymentPlanDO plan);
+
+    void deleteAutoVouchersByPlan(PaymentPlanDO plan);
 
 }

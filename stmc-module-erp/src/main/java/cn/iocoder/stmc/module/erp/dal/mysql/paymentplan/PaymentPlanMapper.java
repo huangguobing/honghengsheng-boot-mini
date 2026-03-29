@@ -30,8 +30,11 @@ public interface PaymentPlanMapper extends BaseMapperX<PaymentPlanDO> {
                 .eqIfPresent(PaymentPlanDO::getProjectId, reqVO.getProjectId())
                 .eqIfPresent(PaymentPlanDO::getPaymentMethod, reqVO.getPaymentMethod())
                 .eqIfPresent(PaymentPlanDO::getOrderId, reqVO.getOrderId())
-                .betweenIfPresent(PaymentPlanDO::getPlanDate, reqVO.getPlanDateStart(), reqVO.getPlanDateEnd())
-                .last("ORDER BY CASE WHEN status IN (0, 20) THEN 0 ELSE 1 END ASC, CASE WHEN status IN (0, 20) THEN id END DESC, id ASC"));
+                .geIfPresent(PaymentPlanDO::getActualDate,
+                        reqVO.getActualDateStart() != null ? reqVO.getActualDateStart().atStartOfDay() : null)
+                .leIfPresent(PaymentPlanDO::getActualDate,
+                        reqVO.getActualDateEnd() != null ? reqVO.getActualDateEnd().atTime(23, 59, 59) : null)
+                .last("ORDER BY CASE WHEN status IN (0, 5, 20) THEN 0 ELSE 1 END ASC, id DESC"));
     }
 
     default List<PaymentPlanDO> selectListByPaymentId(Long paymentId) {
@@ -39,36 +42,36 @@ public interface PaymentPlanMapper extends BaseMapperX<PaymentPlanDO> {
                 .eq(PaymentPlanDO::getPaymentId, paymentId)
                 .orderByAsc(PaymentPlanDO::getStage));
     }
-
-    /**
-     * 查询即将到期的付款计划（指定日期且未通知即将到期）
-     */
-    default List<PaymentPlanDO> selectUpcomingPlans(LocalDate targetDate) {
-        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
-                .eq(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.PENDING.getStatus())
-                .eq(PaymentPlanDO::getPlanDate, targetDate)
-                .lt(PaymentPlanDO::getNotifyStatus, 1)); // 未通知即将到期
-    }
-
-    /**
-     * 查询今日到期的付款计划（当日且未通知当日到期）
-     */
-    default List<PaymentPlanDO> selectDueTodayPlans(LocalDate today) {
-        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
-                .eq(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.PENDING.getStatus())
-                .eq(PaymentPlanDO::getPlanDate, today)
-                .lt(PaymentPlanDO::getNotifyStatus, 2)); // 未通知当日到期
-    }
-
-    /**
-     * 查询已逾期的付款计划
-     */
-    default List<PaymentPlanDO> selectOverduePlans(LocalDate today) {
-        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
-                .eq(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.PENDING.getStatus())
-                .lt(PaymentPlanDO::getPlanDate, today)
-                .lt(PaymentPlanDO::getNotifyStatus, 3)); // 未通知逾期
-    }
+//
+//    /**
+//     * 查询即将到期的付款计划（指定日期且未通知即将到期）
+//     */
+//    default List<PaymentPlanDO> selectUpcomingPlans(LocalDate targetDate) {
+//        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+//                .eq(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.PENDING.getStatus())
+//                .eq(PaymentPlanDO::getPlanDate, targetDate)
+//                .lt(PaymentPlanDO::getNotifyStatus, 1)); // 未通知即将到期
+//    }
+//
+//    /**
+//     * 查询今日到期的付款计划（当日且未通知当日到期）
+//     */
+//    default List<PaymentPlanDO> selectDueTodayPlans(LocalDate today) {
+//        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+//                .eq(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.PENDING.getStatus())
+//                .eq(PaymentPlanDO::getPlanDate, today)
+//                .lt(PaymentPlanDO::getNotifyStatus, 2)); // 未通知当日到期
+//    }
+//
+//    /**
+//     * 查询已逾期的付款计划
+//     */
+//    default List<PaymentPlanDO> selectOverduePlans(LocalDate today) {
+//        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+//                .eq(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.PENDING.getStatus())
+//                .lt(PaymentPlanDO::getPlanDate, today)
+//                .lt(PaymentPlanDO::getNotifyStatus, 3)); // 未通知逾期
+//    }
 
     default void deleteByPaymentId(Long paymentId) {
         delete(PaymentPlanDO::getPaymentId, paymentId);
@@ -113,6 +116,14 @@ public interface PaymentPlanMapper extends BaseMapperX<PaymentPlanDO> {
     }
 
     /**
+     * 根据采购单ID查询付款计划列表
+     */
+    default List<PaymentPlanDO> selectListByPurchaseOrderId(Long purchaseOrderId) {
+        return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+                .eq(PaymentPlanDO::getPurchaseOrderId, purchaseOrderId));
+    }
+
+    /**
      * 按客户查询付款计划（应收）
      */
     default List<PaymentPlanDO> selectListByCustomerId(Long customerId) {
@@ -131,13 +142,14 @@ public interface PaymentPlanMapper extends BaseMapperX<PaymentPlanDO> {
     }
 
     /**
-     * 按类型查询未结清的付款计划（用于对账汇总，只统计待付款/已逾期，不含已付清和已取消）
+     * 按类型查询未结清的付款计划（用于对账汇总，只统计待付款/部分付款，兼容历史逾期）
      */
     default List<PaymentPlanDO> selectListByType(Integer type) {
         return selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
                 .eq(PaymentPlanDO::getType, type)
                 .in(PaymentPlanDO::getStatus,
                         PaymentPlanStatusEnum.PENDING.getStatus(),
+                        PaymentPlanStatusEnum.PARTIAL.getStatus(),
                         PaymentPlanStatusEnum.OVERDUE.getStatus()));
     }
 

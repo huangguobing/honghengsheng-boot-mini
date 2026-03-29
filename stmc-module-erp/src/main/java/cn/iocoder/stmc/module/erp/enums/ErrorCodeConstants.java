@@ -62,6 +62,17 @@ public interface ErrorCodeConstants {
     ErrorCode PAYMENT_PLAN_ALREADY_PAID_CANNOT_EDIT = new ErrorCode(1_020_006_002, "付款计划已付款，无法修改");
     ErrorCode PAYMENT_PLAN_PARTIAL_PAY_EXCEEDS = new ErrorCode(1_020_006_003,
             "付款金额超过剩余应付金额（计划{}，已付{}，剩余{}，本次付款{}）");
+    ErrorCode PAYMENT_PLAN_STATUS_NOT_ALLOW_DELETE = new ErrorCode(1_020_006_004, "当前付款计划状态不允许删除");
+    ErrorCode PAYMENT_PLAN_STATUS_NOT_ALLOW_EDIT = new ErrorCode(1_020_006_005, "当前付款计划状态不允许修改金额或归属信息");
+    ErrorCode PAYMENT_PLAN_AMOUNT_INVALID = new ErrorCode(1_020_006_006, "付款计划金额必须大于 0");
+    ErrorCode PAYMENT_PLAN_PARTIAL_PAY_INVALID = new ErrorCode(1_020_006_007, "部分付款金额必须大于 0");
+    ErrorCode PAYMENT_PLAN_PAID_AMOUNT_EXCEEDS_PLAN = new ErrorCode(1_020_006_008, "已付金额不能超过付款计划金额");
+    ErrorCode PAYMENT_PLAN_AMOUNT_BELOW_PAID = new ErrorCode(1_020_006_009, "付款计划金额不能低于已付金额");
+    ErrorCode PAYMENT_PLAN_CAP_EXCEEDED = new ErrorCode(1_020_006_010, "收付款计划累计金额超过业务上限");
+    ErrorCode PAYMENT_PLAN_REQUIRED_TARGET_MISSING = new ErrorCode(1_020_006_011, "收付款计划缺少必要的关联对象");
+    ErrorCode PAYMENT_PLAN_STATUS_NOT_ALLOW_CANCEL = new ErrorCode(1_020_006_012, "当前付款计划状态不允许取消");
+    ErrorCode PAYMENT_PLAN_HISTORICAL_CANCELLED_READ_ONLY = new ErrorCode(1_020_006_013, "历史已取消付款计划只读，不允许修改");
+    ErrorCode PAYMENT_PLAN_PARTIAL_ALREADY_EXISTS = new ErrorCode(1_020_006_014, "付款计划已处于部分付款状态");
 
     // ========== 产品管理 1-020-007-000 ==========
     ErrorCode PRODUCT_NOT_EXISTS = new ErrorCode(1_020_007_000, "产品不存在");

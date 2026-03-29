@@ -38,17 +38,7 @@ public class PaymentPlanNotifyJob {
     @Scheduled(cron = "0 0 5 * * ?")
     @TenantIgnore // 忽略租户过滤，手动设置租户上下文
     public void execute() {
-        log.info("[PaymentPlanNotifyJob] 开始执行付款计划通知任务");
-
-        try {
-            // 在指定租户上下文中执行
-            TenantUtils.execute(DEFAULT_TENANT_ID, () -> {
-                paymentPlanService.processPaymentPlanNotifications();
-            });
-            log.info("[PaymentPlanNotifyJob] 付款计划通知任务执行完成");
-        } catch (Exception e) {
-            log.error("[PaymentPlanNotifyJob] 付款计划通知任务执行失败", e);
-        }
+        log.info("[PaymentPlanNotifyJob] 付款计划通知任务已停用，跳过执行");
     }
 
 }

@@ -47,20 +47,17 @@ public class PaymentPlanRespVO {
     @Schema(description = "计划付款金额", requiredMode = Schema.RequiredMode.REQUIRED, example = "5000.00")
     private BigDecimal planAmount;
 
-    @Schema(description = "计划付款日期", requiredMode = Schema.RequiredMode.REQUIRED, example = "2024-01-08")
+    @Schema(description = "历史计划付款日期（兼容保留）", example = "2024-01-08")
     private LocalDate planDate;
 
-    @Schema(description = "实际付款金额", example = "5000.00")
+    @Schema(description = "实际累计付款金额", example = "5000.00")
     private BigDecimal actualAmount;
 
-    @Schema(description = "实际付款日期")
+    @Schema(description = "最后一次实际付款/收款时间")
     private LocalDateTime actualDate;
 
-    @Schema(description = "状态(0待付款 10已付款 20已逾期 30已取消)", requiredMode = Schema.RequiredMode.REQUIRED, example = "0")
+    @Schema(description = "状态(0待付款 5部分付款 10已付款 20已逾期-历史兼容 30已取消-历史兼容)", requiredMode = Schema.RequiredMode.REQUIRED, example = "0")
     private Integer status;
-
-    @Schema(description = "通知状态(0未通知 1已通知即将到期 2已通知当日到期 3已通知逾期)", example = "0")
-    private Integer notifyStatus;
 
     @Schema(description = "备注", example = "第一期付款")
     private String remark;

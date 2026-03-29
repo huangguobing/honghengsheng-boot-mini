@@ -7,10 +7,8 @@ import cn.iocoder.stmc.module.erp.controller.admin.voucher.vo.VoucherPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.voucher.vo.VoucherRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.voucher.vo.VoucherSaveReqVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
-import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.voucher.VoucherDO;
 import cn.iocoder.stmc.module.erp.service.order.OrderService;
-import cn.iocoder.stmc.module.erp.service.purchase.PurchaseOrderService;
 import cn.iocoder.stmc.module.erp.service.voucher.VoucherService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -41,9 +39,6 @@ public class VoucherController {
 
     @Resource
     private OrderService orderService;
-
-    @Resource
-    private PurchaseOrderService purchaseOrderService;
 
     @PostMapping("/create")
     @Operation(summary = "创建票据")
@@ -128,12 +123,6 @@ public class VoucherController {
             OrderDO order = orderService.getOrder(vo.getOrderId());
             if (order != null) {
                 vo.setOrderNo(order.getOrderNo());
-            }
-        }
-        if (vo.getPurchaseOrderId() != null) {
-            PurchaseOrderDO purchaseOrder = purchaseOrderService.getPurchaseOrder(vo.getPurchaseOrderId());
-            if (purchaseOrder != null) {
-                vo.setPurchaseOrderNo(purchaseOrder.getPurchaseNo());
             }
         }
     }

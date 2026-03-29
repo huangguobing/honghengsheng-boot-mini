@@ -7,10 +7,13 @@ import cn.iocoder.stmc.module.erp.controller.admin.purchase.vo.PurchaseOrderPage
 import cn.iocoder.stmc.module.erp.controller.admin.purchase.vo.PurchaseOrderSaveReqVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderItemDO;
 import cn.iocoder.stmc.module.erp.dal.mysql.order.OrderMapper;
+import cn.iocoder.stmc.module.erp.dal.mysql.paymentplan.PaymentPlanMapper;
 import cn.iocoder.stmc.module.erp.dal.mysql.purchase.PurchaseOrderItemMapper;
 import cn.iocoder.stmc.module.erp.dal.mysql.purchase.PurchaseOrderMapper;
+import cn.iocoder.stmc.module.erp.enums.PaymentPlanStatusEnum;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +28,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static cn.iocoder.stmc.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.stmc.module.erp.enums.ErrorCodeConstants.PAYMENT_PLAN_STATUS_NOT_ALLOW_DELETE;
 import static cn.iocoder.stmc.module.erp.enums.ErrorCodeConstants.PURCHASE_ORDER_NOT_EXISTS;
 
 /**
@@ -45,6 +49,9 @@ public class PurchaseOrderServiceImpl implements PurchaseOrderService {
 
     @Resource
     private OrderMapper orderMapper;
+
+    @Resource
+    private PaymentPlanMapper paymentPlanMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -96,6 +103,21 @@ public class PurchaseOrderServiceImpl implements PurchaseOrderService {
         if (purchaseOrder == null) {
             throw exception(PURCHASE_ORDER_NOT_EXISTS);
         }
+
+        List<PaymentPlanDO> plans = paymentPlanMapper.selectListByOrderId(purchaseOrder.getOrderId()).stream()
+                .filter(plan -> java.util.Objects.equals(plan.getPurchaseOrderId(), id))
+                .collect(java.util.stream.Collectors.toList());
+
+        boolean hasNonPendingPlan = plans.stream()
+                .anyMatch(plan -> !PaymentPlanStatusEnum.PENDING.getStatus().equals(plan.getStatus()));
+        if (hasNonPendingPlan) {
+            throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_DELETE);
+        }
+
+        for (PaymentPlanDO plan : plans) {
+            paymentPlanMapper.deleteById(plan.getId());
+        }
+
         purchaseOrderMapper.deleteById(id);
         purchaseOrderItemMapper.delete(PurchaseOrderItemDO::getPurchaseOrderId, id);
 

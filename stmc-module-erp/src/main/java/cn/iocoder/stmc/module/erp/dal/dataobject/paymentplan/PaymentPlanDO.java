@@ -89,11 +89,6 @@ public class PaymentPlanDO extends BaseDO {
     private Integer status;
 
     /**
-     * 通知状态(0未通知 1已通知即将到期 2已通知当日到期 3已通知逾期)
-     */
-    private Integer notifyStatus;
-
-    /**
      * 备注
      */
     private String remark;

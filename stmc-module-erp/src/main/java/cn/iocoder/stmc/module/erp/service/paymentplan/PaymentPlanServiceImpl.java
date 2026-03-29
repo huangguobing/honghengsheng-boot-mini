@@ -3,24 +3,23 @@ package cn.iocoder.stmc.module.erp.service.paymentplan;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.IdUtil;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanAvailableOrderRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPageReqVO;
-import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPreviewVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSaveReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.ReconcileSummaryVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentterm.PaymentTermConfigDO;
-import cn.iocoder.stmc.module.erp.dal.dataobject.supplier.SupplierDO;
+import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO;
 import cn.iocoder.stmc.module.erp.dal.mysql.paymentplan.PaymentPlanMapper;
-import cn.iocoder.stmc.module.erp.enums.PaymentPlanNotifyStatusEnum;
 import cn.iocoder.stmc.module.erp.enums.PaymentPlanStatusEnum;
 import cn.iocoder.stmc.module.erp.service.payment.PaymentService;
+import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.stmc.module.erp.service.paymentterm.PaymentTermConfigService;
+import cn.iocoder.stmc.module.erp.service.purchase.PurchaseOrderService;
 import cn.iocoder.stmc.module.erp.service.supplier.SupplierService;
-import cn.iocoder.stmc.module.system.api.notify.NotifyMessageSendApi;
-import cn.iocoder.stmc.module.system.api.notify.dto.NotifySendSingleToUserReqDTO;
-import cn.iocoder.stmc.module.system.dal.dataobject.user.AdminUserDO;
-import cn.iocoder.stmc.module.system.service.notify.NotifyMessageService;
+import cn.iocoder.stmc.module.erp.service.voucher.VoucherService;
+import cn.iocoder.stmc.module.system.enums.permission.RoleCodeEnum;
 import cn.iocoder.stmc.module.system.service.permission.PermissionService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
@@ -33,8 +32,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -51,17 +48,6 @@ import static cn.iocoder.stmc.module.erp.enums.ErrorCodeConstants.*;
 @Validated
 public class PaymentPlanServiceImpl implements PaymentPlanService {
 
-    /** 即将到期提醒天数 */
-    private static final int UPCOMING_DAYS = 3;
-
-    /** 通知模板编码 */
-    private static final String NOTIFY_TEMPLATE_UPCOMING = "payment_plan_upcoming";
-    private static final String NOTIFY_TEMPLATE_DUE_TODAY = "payment_plan_due_today";
-    private static final String NOTIFY_TEMPLATE_OVERDUE = "payment_plan_overdue";
-
-    /** 需要通知的角色ID：超管(1)和老板(2) */
-    private static final List<Long> NOTIFY_ROLE_IDS = Arrays.asList(1L, 2L);
-
     @Resource
     private PaymentPlanMapper paymentPlanMapper;
     @Resource
@@ -69,11 +55,7 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     @Resource
     private SupplierService supplierService;
     @Resource
-    private NotifyMessageSendApi notifyMessageSendApi;
-    @Resource
-    private NotifyMessageService notifyMessageService;
-    @Resource
-    private PermissionService permissionService;
+    private PurchaseOrderService purchaseOrderService;
     @Resource
     @Lazy // 避免循环依赖
     private PaymentService paymentService;
@@ -81,52 +63,12 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     @Lazy
     private cn.iocoder.stmc.module.erp.service.order.OrderService orderService;
     @Resource
-    private cn.iocoder.stmc.module.system.service.user.AdminUserService adminUserService;
-    @Resource
     private cn.iocoder.stmc.module.erp.service.customer.CustomerService customerService;
-
-    @Override
-    public List<PaymentPlanPreviewVO> previewPaymentPlans(Long supplierId, BigDecimal totalAmount, LocalDate paymentDate) {
-        // 1. 参数校验
-        if (supplierId == null || totalAmount == null) {
-            return Collections.emptyList();
-        }
-        if (paymentDate == null) {
-            paymentDate = LocalDate.now();
-        }
-
-        // 2. 获取供应商的分期配置
-        List<PaymentTermConfigDO> configs = paymentTermConfigService.getEnabledConfigsBySupplierId(supplierId);
-        if (CollUtil.isEmpty(configs)) {
-            return Collections.emptyList();
-        }
-
-        // 3. 生成预览数据
-        LocalDate today = LocalDate.now();
-        List<PaymentPlanPreviewVO> previewList = new ArrayList<>();
-        for (PaymentTermConfigDO config : configs) {
-            PaymentPlanPreviewVO preview = new PaymentPlanPreviewVO();
-            preview.setStage(config.getStage());
-            preview.setPercentage(config.getPercentage());
-
-            // 计算付款金额
-            BigDecimal planAmount = totalAmount
-                    .multiply(config.getPercentage())
-                    .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-            preview.setPlanAmount(planAmount);
-
-            // 计算付款日期
-            LocalDate planDate = paymentDate.plusDays(config.getDaysAfterOrder());
-            preview.setPlanDate(planDate);
-
-            // 判断是否当天到期
-            preview.setIsToday(planDate.equals(today));
-
-            previewList.add(preview);
-        }
-
-        return previewList;
-    }
+    @Resource
+    @Lazy
+    private VoucherService voucherService;
+    @Resource
+    private PermissionService permissionService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -182,11 +124,9 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
                 plan.setActualAmount(planAmount);
                 plan.setActualDate(LocalDateTime.now());
                 plan.setStatus(PaymentPlanStatusEnum.PAID.getStatus());
-                plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOT_NOTIFIED.getStatus());
             } else {
                 plan.setActualAmount(BigDecimal.ZERO);
                 plan.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
-                plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOT_NOTIFIED.getStatus());
             }
 
             paymentPlanMapper.insert(plan);
@@ -194,9 +134,6 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
 
         log.info("[generatePaymentPlansForPayment] 付款单[{}]生成了{}条付款计划，其中{}条已标记为已付款",
                 paymentNo, configs.size(), paidStageSet.size());
-
-        // 7. 立即检查并发送当天到期或已过期的通知
-        checkAndNotifyImmediately(paymentId);
     }
 
     @Override
@@ -255,12 +192,12 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     public void cancelByPaymentId(Long paymentId) {
         List<PaymentPlanDO> plans = paymentPlanMapper.selectListByPaymentId(paymentId);
         for (PaymentPlanDO plan : plans) {
-            // 只取消待付款状态的计划
-            if (PaymentPlanStatusEnum.PENDING.getStatus().equals(plan.getStatus())) {
-                plan.setStatus(PaymentPlanStatusEnum.CANCELLED.getStatus());
-                paymentPlanMapper.updateById(plan);
+            if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())
+                    || PaymentPlanStatusEnum.PARTIAL.getStatus().equals(plan.getStatus())) {
+                throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_CANCEL);
             }
         }
+        paymentPlanMapper.deleteByPaymentId(paymentId);
     }
 
     @Override
@@ -277,181 +214,9 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void processPaymentPlanNotifications() {
-        LocalDate today = LocalDate.now();
-        LocalDate upcomingDate = today.plusDays(UPCOMING_DAYS);
-
-        // 1. 获取需要通知的用户（老板和超管）
-        Set<Long> notifyUserIds = getNotifyUserIds();
-        if (CollUtil.isEmpty(notifyUserIds)) {
-            log.warn("[processPaymentPlanNotifications] 未找到需要通知的用户（老板和超管角色）");
-            return;
-        }
-
-        int upcomingCount = 0;
-        int dueTodayCount = 0;
-        int overdueCount = 0;
-
-        // 2. 【已屏蔽】处理即将到期的付款计划（提前3天）
-        // 根据需求优化，不再发送"即将到期"通知，只保留"当日到期"和"逾期"通知
-        // List<PaymentPlanDO> upcomingPlans = paymentPlanMapper.selectUpcomingPlans(upcomingDate);
-        // for (PaymentPlanDO plan : upcomingPlans) {
-        //     sendUpcomingNotification(plan, notifyUserIds);
-        //     plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOTIFIED_UPCOMING.getStatus());
-        //     paymentPlanMapper.updateById(plan);
-        //     upcomingCount++;
-        // }
-
-        // 3. 处理今日到期的付款计划
-        List<PaymentPlanDO> dueTodayPlans = paymentPlanMapper.selectDueTodayPlans(today);
-        for (PaymentPlanDO plan : dueTodayPlans) {
-            sendDueTodayNotification(plan, notifyUserIds);
-            plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOTIFIED_DUE_TODAY.getStatus());
-            paymentPlanMapper.updateById(plan);
-            dueTodayCount++;
-        }
-
-        // 4. 处理已逾期的付款计划
-        List<PaymentPlanDO> overduePlans = paymentPlanMapper.selectOverduePlans(today);
-        for (PaymentPlanDO plan : overduePlans) {
-            // 更新状态为逾期
-            plan.setStatus(PaymentPlanStatusEnum.OVERDUE.getStatus());
-            sendOverdueNotification(plan, notifyUserIds);
-            plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOTIFIED_OVERDUE.getStatus());
-            paymentPlanMapper.updateById(plan);
-            overdueCount++;
-        }
-
-        log.info("[processPaymentPlanNotifications] 处理完成，即将到期:{}条，今日到期:{}条，已逾期:{}条",
-                upcomingCount, dueTodayCount, overdueCount);
+        log.info("[processPaymentPlanNotifications] 付款计划通知机制已停用，跳过处理");
     }
 
-    /**
-     * 获取需要通知的用户ID集合（老板role_id=2和超管role_id=1）
-     */
-    private Set<Long> getNotifyUserIds() {
-        return permissionService.getUserRoleIdListByRoleId(NOTIFY_ROLE_IDS);
-    }
-
-    /**
-     * 发送即将到期通知（提前3天）
-     */
-    private void sendUpcomingNotification(PaymentPlanDO plan, Set<Long> userIds) {
-        SupplierDO supplier = supplierService.getSupplier(plan.getSupplierId());
-        String supplierName = supplier != null ? supplier.getName() : "未知供应商";
-
-        Map<String, Object> params = new HashMap<>();
-        params.put("orderNo", plan.getPaymentNo()); // 模板参数名为orderNo
-        params.put("stage", plan.getStage());
-        params.put("supplierName", supplierName);
-        params.put("planAmount", plan.getPlanAmount().toString());
-        params.put("planDate", plan.getPlanDate().format(DateTimeFormatter.ofPattern("yyyy-MM-dd")));
-
-        sendNotification(userIds, NOTIFY_TEMPLATE_UPCOMING, params, plan.getId());
-    }
-
-    /**
-     * 发送今日到期通知
-     */
-    private void sendDueTodayNotification(PaymentPlanDO plan, Set<Long> userIds) {
-        SupplierDO supplier = supplierService.getSupplier(plan.getSupplierId());
-        String supplierName = supplier != null ? supplier.getName() : "未知供应商";
-
-        // 获取业务员名称
-        String salesmanName = "未知业务员";
-        if (plan.getOrderId() != null) {
-            OrderDO order = orderService.getOrder(plan.getOrderId());
-            if (order != null && order.getSalesmanId() != null) {
-                AdminUserDO salesman = adminUserService.getUser(order.getSalesmanId());
-                if (salesman != null) {
-                    salesmanName = salesman.getNickname();
-                }
-            }
-        }
-
-        Map<String, Object> params = new HashMap<>();
-        params.put("salesmanName", salesmanName);
-        params.put("supplierName", supplierName);
-        params.put("planAmount", plan.getPlanAmount().toString());
-
-        sendNotification(userIds, NOTIFY_TEMPLATE_DUE_TODAY, params, plan.getId());
-    }
-
-    /**
-     * 发送逾期通知
-     */
-    private void sendOverdueNotification(PaymentPlanDO plan, Set<Long> userIds) {
-        // 发送逾期通知前，标记该付款计划之前的"当日到期"通知为已读
-        // 防止同一付款计划重复提醒（一个付款计划只需要一次提醒）
-        markPreviousDueTodayNotificationsAsRead(plan.getId());
-
-        SupplierDO supplier = supplierService.getSupplier(plan.getSupplierId());
-        String supplierName = supplier != null ? supplier.getName() : "未知供应商";
-
-        long overdueDays = ChronoUnit.DAYS.between(plan.getPlanDate(), LocalDate.now());
-
-        Map<String, Object> params = new HashMap<>();
-        params.put("orderNo", plan.getPaymentNo()); // 模板参数名为orderNo
-        params.put("stage", plan.getStage());
-        params.put("supplierName", supplierName);
-        params.put("planAmount", plan.getPlanAmount().toString());
-        params.put("planDate", plan.getPlanDate().format(DateTimeFormatter.ofPattern("yyyy-MM-dd")));
-        params.put("overdueDays", overdueDays);
-
-        sendNotification(userIds, NOTIFY_TEMPLATE_OVERDUE, params, plan.getId());
-    }
-
-    /**
-     * 发送通知给用户列表
-     */
-    private void sendNotification(Set<Long> userIds, String templateCode, Map<String, Object> params, Long planId) {
-        for (Long userId : userIds) {
-            try {
-                NotifySendSingleToUserReqDTO reqDTO = new NotifySendSingleToUserReqDTO();
-                reqDTO.setUserId(userId);
-                reqDTO.setTemplateCode(templateCode);
-                reqDTO.setTemplateParams(params);
-                reqDTO.setBusinessId(planId); // 关联付款计划ID，用于后续防重和删除
-                notifyMessageSendApi.sendSingleMessageToAdmin(reqDTO);
-            } catch (Exception e) {
-                log.error("[sendNotification] 发送通知失败，userId:{}, templateCode:{}, planId:{}",
-                        userId, templateCode, planId, e);
-            }
-        }
-    }
-
-    /**
-     * 立即检查并发送当天到期的通知
-     * 场景：新增付款计划时，如果某期当天到期且未付款，立即发送通知
-     */
-    private void checkAndNotifyImmediately(Long paymentId) {
-        LocalDate today = LocalDate.now();
-        Set<Long> notifyUserIds = getNotifyUserIds();
-        if (CollUtil.isEmpty(notifyUserIds)) {
-            log.warn("[checkAndNotifyImmediately] 未找到需要通知的用户");
-            return;
-        }
-
-        List<PaymentPlanDO> plans = paymentPlanMapper.selectListByPaymentId(paymentId);
-        for (PaymentPlanDO plan : plans) {
-            // 只处理待付款状态的计划
-            if (!PaymentPlanStatusEnum.PENDING.getStatus().equals(plan.getStatus())) {
-                continue;
-            }
-
-            LocalDate planDate = plan.getPlanDate();
-            if (planDate == null) {
-                continue;
-            }
-
-            // 当天到期且未付款，立即发送通知
-            if (planDate.equals(today)) {
-                sendDueTodayNotification(plan, notifyUserIds);
-                plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOTIFIED_DUE_TODAY.getStatus());
-                paymentPlanMapper.updateById(plan);
-                log.info("[checkAndNotifyImmediately] 付款计划[{}]当天到期且未付款，已发送即时通知", plan.getPlanNo());
-            }
-        }
-    }
 
     /**
      * 生成付款计划单号
@@ -498,41 +263,11 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
             plan.setActualAmount(BigDecimal.ZERO);
             plan.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
         }
-        plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOT_NOTIFIED.getStatus());
 
         paymentPlanMapper.insert(plan);
 
         log.info("[createSinglePaymentPlan] 创建单期付款计划成功，paymentNo:{}, amount:{}, isPaid:{}, remark:{}",
                 paymentNo, amount, isPaid, remark);
-
-        // 5. 如果是待付款状态且当天到期，立即发送通知
-        if (!Boolean.TRUE.equals(isPaid)) {
-            checkAndNotifySinglePlan(plan);
-        }
-    }
-
-    /**
-     * 检查单个付款计划是否需要立即发送通知
-     */
-    private void checkAndNotifySinglePlan(PaymentPlanDO plan) {
-        LocalDate today = LocalDate.now();
-        LocalDate planDate = plan.getPlanDate();
-        if (planDate == null) {
-            return;
-        }
-
-        Set<Long> notifyUserIds = getNotifyUserIds();
-        if (CollUtil.isEmpty(notifyUserIds)) {
-            return;
-        }
-
-        // 当天到期且未付款，立即发送通知
-        if (planDate.equals(today)) {
-            sendDueTodayNotification(plan, notifyUserIds);
-            plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOTIFIED_DUE_TODAY.getStatus());
-            paymentPlanMapper.updateById(plan);
-            log.info("[checkAndNotifySinglePlan] 付款计划[{}]当天到期且未付款，已发送即时通知", plan.getPlanNo());
-        }
     }
 
     @Override
@@ -540,14 +275,12 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     public void cancelPaymentPlansByPaymentId(Long paymentId) {
         List<PaymentPlanDO> plans = paymentPlanMapper.selectListByPaymentId(paymentId);
         for (PaymentPlanDO plan : plans) {
-            // 只取消未付款的计划
-            if (!PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
-                PaymentPlanDO update = new PaymentPlanDO();
-                update.setId(plan.getId());
-                update.setStatus(PaymentPlanStatusEnum.CANCELLED.getStatus());
-                paymentPlanMapper.updateById(update);
+            if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())
+                    || PaymentPlanStatusEnum.PARTIAL.getStatus().equals(plan.getStatus())) {
+                throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_CANCEL);
             }
         }
+        paymentPlanMapper.deleteByPaymentId(paymentId);
     }
 
     @Override
@@ -587,88 +320,139 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         paymentPlanMapper.updateById(update);
     }
 
-    /**
-     * 标记指定付款计划的"当日到期"通知为已读
-     * 用于逾期通知发送前，避免同一付款计划重复提醒
-     */
-    private void markPreviousDueTodayNotificationsAsRead(Long planId) {
-        int updated = notifyMessageService.markReadByBusinessIdAndTemplate(planId, NOTIFY_TEMPLATE_DUE_TODAY);
-        if (updated > 0) {
-            log.info("[markPreviousDueTodayNotificationsAsRead] 标记{}条当日到期通知为已读，planId:{}", updated, planId);
-        }
-    }
-
-    @Override
-    public void deleteNotificationsByPlanIds(Collection<Long> planIds) {
-        if (CollUtil.isEmpty(planIds)) {
-            return;
-        }
-        int deleted = notifyMessageService.deleteByBusinessIds(planIds);
-        log.info("[deleteNotificationsByPlanIds] 删除{}条通知，planIds:{}", deleted, planIds);
-    }
-
     // ========== 鸿恒盛扩展：灵活收付款计划 ==========
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Long createPaymentPlan(PaymentPlanSaveReqVO reqVO) {
+        validatePaymentPlanTarget(reqVO);
+        validatePaymentPlanAmount(reqVO.getPlanAmount());
+
+        OrderDO order = lockOrder(reqVO.getOrderId());
+        BigDecimal paidAmount = reqVO.getPaidAmount() != null ? reqVO.getPaidAmount() : BigDecimal.ZERO;
+        if (paidAmount.compareTo(BigDecimal.ZERO) < 0) {
+            throw exception(PAYMENT_PLAN_PARTIAL_PAY_INVALID);
+        }
+        if (paidAmount.compareTo(reqVO.getPlanAmount()) > 0) {
+            throw exception(PAYMENT_PLAN_PAID_AMOUNT_EXCEEDS_PLAN);
+        }
+
+        validatePlanCap(reqVO, null, reqVO.getPlanAmount());
+
         PaymentPlanDO plan = new PaymentPlanDO();
         plan.setPlanNo(generatePlanNo());
         plan.setType(reqVO.getType());
         plan.setOrderId(reqVO.getOrderId());
         plan.setPurchaseOrderId(reqVO.getPurchaseOrderId());
-        plan.setSupplierId(reqVO.getSupplierId());
+        plan.setSupplierId(resolvePersistedSupplierId(reqVO));
         plan.setCustomerId(reqVO.getCustomerId());
         plan.setProjectId(reqVO.getProjectId());
         plan.setPlanAmount(reqVO.getPlanAmount());
-        plan.setPaidAmount(reqVO.getPaidAmount() != null ? reqVO.getPaidAmount() : BigDecimal.ZERO);
+        plan.setPaidAmount(paidAmount);
         plan.setPaymentMethod(reqVO.getPaymentMethod());
-        plan.setPlanDate(reqVO.getPlanDate());
+        plan.setPlanDate(reqVO.getPlanDate() != null ? reqVO.getPlanDate() : LocalDate.now());
         plan.setRemark(reqVO.getRemark());
-        plan.setStage(1); // 灵活添加默认单期
-        plan.setActualAmount(BigDecimal.ZERO);
-        // 如果前端传入了 status（如直接标记为已付款），则使用该值，否则默认待付款
-        plan.setStatus(reqVO.getStatus() != null ? reqVO.getStatus() : PaymentPlanStatusEnum.PENDING.getStatus());
-        plan.setNotifyStatus(PaymentPlanNotifyStatusEnum.NOT_NOTIFIED.getStatus());
+        plan.setStage(1);
+
+        LocalDateTime now = LocalDateTime.now();
+        if (paidAmount.compareTo(reqVO.getPlanAmount()) >= 0 || PaymentPlanStatusEnum.PAID.getStatus().equals(reqVO.getStatus())) {
+            plan.setStatus(PaymentPlanStatusEnum.PAID.getStatus());
+            plan.setActualAmount(paidAmount.compareTo(BigDecimal.ZERO) > 0 ? paidAmount : reqVO.getPlanAmount());
+            plan.setPaidAmount(plan.getActualAmount());
+            plan.setActualDate(now);
+        } else if (paidAmount.compareTo(BigDecimal.ZERO) > 0 || PaymentPlanStatusEnum.PARTIAL.getStatus().equals(reqVO.getStatus())) {
+            plan.setStatus(PaymentPlanStatusEnum.PARTIAL.getStatus());
+            plan.setActualAmount(paidAmount);
+            plan.setActualDate(now);
+        } else {
+            plan.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
+            plan.setActualAmount(BigDecimal.ZERO);
+            plan.setActualDate(null);
+        }
+
         paymentPlanMapper.insert(plan);
+        tryAutoCreateVoucher(plan);
         return plan.getId();
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updatePaymentPlan(PaymentPlanSaveReqVO reqVO) {
         PaymentPlanDO plan = paymentPlanMapper.selectById(reqVO.getId());
         if (plan == null) {
             throw exception(PAYMENT_PLAN_NOT_EXISTS);
         }
+        if (PaymentPlanStatusEnum.CANCELLED.getStatus().equals(plan.getStatus())) {
+            throw exception(PAYMENT_PLAN_HISTORICAL_CANCELLED_READ_ONLY);
+        }
+
+        OrderDO order = lockOrder(reqVO.getOrderId() != null ? reqVO.getOrderId() : plan.getOrderId());
+        validatePaymentPlanTarget(reqVO);
+
+        boolean immutablePlan = PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())
+                || PaymentPlanStatusEnum.PARTIAL.getStatus().equals(plan.getStatus());
+
+        if (immutablePlan) {
+            boolean targetChanged = !Objects.equals(plan.getType(), reqVO.getType())
+                    || !Objects.equals(plan.getOrderId(), reqVO.getOrderId())
+                    || !Objects.equals(plan.getPurchaseOrderId(), reqVO.getPurchaseOrderId())
+                    || !Objects.equals(plan.getSupplierId(), reqVO.getSupplierId())
+                    || !Objects.equals(plan.getCustomerId(), reqVO.getCustomerId())
+                    || !Objects.equals(plan.getProjectId(), reqVO.getProjectId());
+            if (targetChanged || (reqVO.getPlanAmount() != null && plan.getPlanAmount() != null
+                    && reqVO.getPlanAmount().compareTo(plan.getPlanAmount()) != 0)) {
+                throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_EDIT);
+            }
+        } else {
+            validatePaymentPlanAmount(reqVO.getPlanAmount());
+            validatePlanCap(reqVO, plan, reqVO.getPlanAmount());
+        }
+
+        if (reqVO.getPlanAmount() != null && plan.getPaidAmount() != null
+                && reqVO.getPlanAmount().compareTo(plan.getPaidAmount()) < 0) {
+            throw exception(PAYMENT_PLAN_AMOUNT_BELOW_PAID);
+        }
+
         PaymentPlanDO update = new PaymentPlanDO();
         update.setId(reqVO.getId());
-        update.setType(reqVO.getType());
-        update.setOrderId(reqVO.getOrderId());
-        update.setPurchaseOrderId(reqVO.getPurchaseOrderId());
-        update.setSupplierId(reqVO.getSupplierId());
-        update.setCustomerId(reqVO.getCustomerId());
-        update.setProjectId(reqVO.getProjectId());
-        update.setPlanAmount(reqVO.getPlanAmount());
         update.setPaymentMethod(reqVO.getPaymentMethod());
-        update.setPlanDate(reqVO.getPlanDate());
         update.setRemark(reqVO.getRemark());
-        // 如果修改了已付款的计划，重置为待付款状态
-        if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
-            update.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
-            update.setPaidAmount(BigDecimal.ZERO);
-            update.setActualAmount(BigDecimal.ZERO);
-            update.setActualDate(null);
+        update.setPlanDate(reqVO.getPlanDate());
+
+        if (!immutablePlan) {
+            update.setType(reqVO.getType());
+            update.setOrderId(reqVO.getOrderId());
+            update.setPurchaseOrderId(reqVO.getPurchaseOrderId());
+            update.setSupplierId(resolvePersistedSupplierId(reqVO));
+            update.setCustomerId(reqVO.getCustomerId());
+            update.setProjectId(reqVO.getProjectId());
+            update.setPlanAmount(reqVO.getPlanAmount());
         }
+
         paymentPlanMapper.updateById(update);
+
+        PaymentPlanDO planAfterUpdate = paymentPlanMapper.selectById(reqVO.getId());
+        tryAutoSyncVouchers(planAfterUpdate);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deletePaymentPlan(Long id) {
         PaymentPlanDO plan = paymentPlanMapper.selectById(id);
         if (plan == null) {
             throw exception(PAYMENT_PLAN_NOT_EXISTS);
         }
-        // 允许删除任何状态的计划（包括已付款）
+        boolean superAdmin = isCurrentUserSuperAdmin();
+        if (!superAdmin && !PaymentPlanStatusEnum.PENDING.getStatus().equals(plan.getStatus())) {
+            throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_DELETE);
+        }
         paymentPlanMapper.deleteById(id);
+        tryAutoDeleteVouchers(plan);
+    }
+
+    private boolean isCurrentUserSuperAdmin() {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        return userId != null && permissionService.hasAnyRoles(userId, RoleCodeEnum.SUPER_ADMIN.getCode());
     }
 
     @Override
@@ -680,6 +464,9 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         }
         if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
             throw exception(PAYMENT_PLAN_ALREADY_PAID);
+        }
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw exception(PAYMENT_PLAN_PARTIAL_PAY_INVALID);
         }
 
         BigDecimal currentPaid = plan.getPaidAmount() != null ? plan.getPaidAmount() : BigDecimal.ZERO;
@@ -695,17 +482,15 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         PaymentPlanDO update = new PaymentPlanDO();
         update.setId(id);
         update.setPaidAmount(newPaid);
-        update.setPaymentMethod(paymentMethod);
+        update.setActualAmount(newPaid);
+        update.setPaymentMethod(paymentMethod != null ? paymentMethod : plan.getPaymentMethod());
         update.setActualDate(LocalDateTime.now());
-
-        if (newPaid.compareTo(planAmount) >= 0) {
-            update.setStatus(PaymentPlanStatusEnum.PAID.getStatus());
-            update.setActualAmount(newPaid);
-        }
+        update.setStatus(newPaid.compareTo(planAmount) >= 0
+                ? PaymentPlanStatusEnum.PAID.getStatus()
+                : PaymentPlanStatusEnum.PARTIAL.getStatus());
         paymentPlanMapper.updateById(update);
 
-        // 如果已付清，检查订单是否可以自动完成
-        if (newPaid.compareTo(planAmount) >= 0 && plan.getOrderId() != null) {
+        if (plan.getOrderId() != null) {
             orderService.checkAndAutoComplete(plan.getOrderId());
         }
     }
@@ -764,6 +549,158 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
             result.add(vo);
         }
         return result;
+    }
+
+    @Override
+    public List<PaymentPlanAvailableOrderRespVO> getAvailableOrderList(Integer type) {
+        List<OrderDO> orders = orderService.getOrderSimpleList();
+        if (CollUtil.isEmpty(orders)) {
+            return Collections.emptyList();
+        }
+
+        return orders.stream()
+                .filter(order -> order.getOrderType() != null && order.getOrderType() == 1)
+                .map(order -> buildAvailableOrder(order, type))
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparing(PaymentPlanAvailableOrderRespVO::getId).reversed())
+                .collect(Collectors.toList());
+    }
+
+    private PaymentPlanAvailableOrderRespVO buildAvailableOrder(OrderDO order, Integer type) {
+        List<PaymentPlanDO> plans = paymentPlanMapper.selectListByOrderId(order.getId()).stream()
+                .filter(plan -> Objects.equals(plan.getType(), type))
+                .filter(plan -> !Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.CANCELLED.getStatus()))
+                .collect(Collectors.toList());
+
+        BigDecimal assignedAmount = plans.stream()
+                .map(plan -> plan.getPlanAmount() != null ? plan.getPlanAmount() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal cap;
+        if (Integer.valueOf(0).equals(type)) {
+            cap = order.getTotalPurchaseAmount() != null ? order.getTotalPurchaseAmount() : BigDecimal.ZERO;
+        } else {
+            cap = order.getPayableAmount() != null ? order.getPayableAmount() : BigDecimal.ZERO;
+        }
+
+        BigDecimal remainingAmount = cap.subtract(assignedAmount);
+        if (remainingAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+
+        PaymentPlanAvailableOrderRespVO vo = new PaymentPlanAvailableOrderRespVO();
+        vo.setId(order.getId());
+        vo.setOrderNo(order.getOrderNo());
+        vo.setRemainingAmount(remainingAmount);
+        return vo;
+    }
+
+    private void validatePaymentPlanTarget(PaymentPlanSaveReqVO reqVO) {
+        if (reqVO.getOrderId() == null || reqVO.getType() == null) {
+            throw exception(PAYMENT_PLAN_REQUIRED_TARGET_MISSING);
+        }
+        if (Integer.valueOf(0).equals(reqVO.getType()) && reqVO.getSupplierId() == null) {
+            throw exception(PAYMENT_PLAN_REQUIRED_TARGET_MISSING);
+        }
+        if (Integer.valueOf(1).equals(reqVO.getType()) && reqVO.getCustomerId() == null) {
+            throw exception(PAYMENT_PLAN_REQUIRED_TARGET_MISSING);
+        }
+    }
+
+    private void validatePaymentPlanAmount(BigDecimal amount) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+        }
+    }
+
+    private Long resolvePersistedSupplierId(PaymentPlanSaveReqVO reqVO) {
+        if (Integer.valueOf(1).equals(reqVO.getType()) && reqVO.getSupplierId() == null) {
+            return 0L;
+        }
+        return reqVO.getSupplierId();
+    }
+
+    private OrderDO lockOrder(Long orderId) {
+        OrderDO order = orderService.getOrder(orderId);
+        if (order == null) {
+            throw exception(ORDER_NOT_EXISTS);
+        }
+        return order;
+    }
+
+    private void tryAutoCreateVoucher(PaymentPlanDO plan) {
+        try {
+            voucherService.createAutoVoucherFromPlan(plan);
+        } catch (Exception e) {
+            log.warn("[tryAutoCreateVoucher] 发票预制失败，跳过，不影响付款计划主流程，planId={}",
+                    plan != null ? plan.getId() : null, e);
+        }
+    }
+
+    private void tryAutoSyncVouchers(PaymentPlanDO plan) {
+        try {
+            voucherService.syncAutoVouchersFromPlan(plan);
+        } catch (Exception e) {
+            log.warn("[tryAutoSyncVouchers] 发票弱同步失败，跳过，不影响付款计划主流程，planId={}",
+                    plan != null ? plan.getId() : null, e);
+        }
+    }
+
+    private void tryAutoDeleteVouchers(PaymentPlanDO plan) {
+        try {
+            voucherService.deleteAutoVouchersByPlan(plan);
+        } catch (Exception e) {
+            log.warn("[tryAutoDeleteVouchers] 发票联删失败，跳过，不影响付款计划主流程，planId={}",
+                    plan != null ? plan.getId() : null, e);
+        }
+    }
+
+    private void validatePlanCap(PaymentPlanSaveReqVO reqVO, PaymentPlanDO existingPlan, BigDecimal targetAmount) {
+        OrderDO order = orderService.getOrder(reqVO.getOrderId());
+        if (order == null) {
+            throw exception(ORDER_NOT_EXISTS);
+        }
+
+        BigDecimal cap;
+        List<PaymentPlanDO> existingPlans;
+        if (Integer.valueOf(0).equals(reqVO.getType()) && reqVO.getPurchaseOrderId() != null) {
+            PurchaseOrderDO purchaseOrder = purchaseOrderService.getPurchaseOrder(reqVO.getPurchaseOrderId());
+            if (purchaseOrder == null) {
+                throw exception(PURCHASE_ORDER_NOT_EXISTS);
+            }
+            cap = purchaseOrder.getTotalAmount() != null ? purchaseOrder.getTotalAmount() : BigDecimal.ZERO;
+            existingPlans = paymentPlanMapper.selectListByPurchaseOrderId(reqVO.getPurchaseOrderId()).stream()
+                    .filter(plan -> Objects.equals(plan.getType(), reqVO.getType()))
+                    .filter(plan -> !Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.CANCELLED.getStatus()))
+                    .filter(plan -> existingPlan == null || !Objects.equals(plan.getId(), existingPlan.getId()))
+                    .collect(Collectors.toList());
+        } else if (Integer.valueOf(0).equals(reqVO.getType())) {
+            cap = orderService.getOrderItemList(reqVO.getOrderId()).stream()
+                    .filter(item -> Objects.equals(item.getSupplierId(), reqVO.getSupplierId()))
+                    .map(item -> item.getPurchaseAmount() != null ? item.getPurchaseAmount() : BigDecimal.ZERO)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            existingPlans = paymentPlanMapper.selectListByOrderId(reqVO.getOrderId()).stream()
+                    .filter(plan -> Objects.equals(plan.getType(), reqVO.getType()))
+                    .filter(plan -> !Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.CANCELLED.getStatus()))
+                    .filter(plan -> existingPlan == null || !Objects.equals(plan.getId(), existingPlan.getId()))
+                    .filter(plan -> Objects.equals(plan.getSupplierId(), reqVO.getSupplierId()))
+                    .collect(Collectors.toList());
+        } else {
+            cap = order.getPayableAmount() != null ? order.getPayableAmount() : BigDecimal.ZERO;
+            existingPlans = paymentPlanMapper.selectListByOrderId(reqVO.getOrderId()).stream()
+                    .filter(plan -> Objects.equals(plan.getType(), reqVO.getType()))
+                    .filter(plan -> !Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.CANCELLED.getStatus()))
+                    .filter(plan -> existingPlan == null || !Objects.equals(plan.getId(), existingPlan.getId()))
+                    .collect(Collectors.toList());
+        }
+
+        BigDecimal existingTotal = existingPlans.stream()
+                .map(plan -> plan.getPlanAmount() != null ? plan.getPlanAmount() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        if (existingTotal.add(targetAmount).compareTo(cap) > 0) {
+            throw exception(PAYMENT_PLAN_CAP_EXCEEDED);
+        }
     }
 
 }

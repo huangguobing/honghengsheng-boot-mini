@@ -4,8 +4,9 @@ import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.stmc.framework.common.pojo.CommonResult;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanAvailableOrderRespVO;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanAvailableOrderRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPageReqVO;
-import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPreviewVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSaveReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.ReconcileSummaryVO;
@@ -22,7 +23,6 @@ import cn.iocoder.stmc.module.erp.service.supplier.SupplierService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -30,7 +30,6 @@ import org.springframework.web.bind.annotation.*;
 import javax.annotation.Resource;
 import javax.validation.Valid;
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -59,18 +58,6 @@ public class PaymentPlanController {
     private CustomerService customerService;
     @Resource
     private cn.iocoder.stmc.module.erp.service.project.ProjectService projectService;
-
-    @GetMapping("/preview")
-    @Operation(summary = "预览付款计划")
-    @PreAuthorize("@ss.hasPermission('erp:payment:create')")
-    public CommonResult<List<PaymentPlanPreviewVO>> previewPaymentPlans(
-            @RequestParam("supplierId") @Parameter(description = "供应商编号", required = true) Long supplierId,
-            @RequestParam("amount") @Parameter(description = "付款金额", required = true) BigDecimal amount,
-            @RequestParam(value = "paymentDate", required = false) @Parameter(description = "付款日期")
-            @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate paymentDate) {
-        List<PaymentPlanPreviewVO> previewList = paymentPlanService.previewPaymentPlans(supplierId, amount, paymentDate);
-        return success(previewList);
-    }
 
     @GetMapping("/page")
     @Operation(summary = "获取付款计划分页")
@@ -123,7 +110,7 @@ public class PaymentPlanController {
     }
 
     @PutMapping("/update")
-    @Operation(summary = "更新收付款计划")
+    @Operation(summary = "更新收付款计划（已付款/部分付款仅允许改备注和方式）")
     @PreAuthorize("@ss.hasPermission('erp:payment-plan:update')")
     public CommonResult<Boolean> updatePaymentPlan(@Valid @RequestBody PaymentPlanSaveReqVO reqVO) {
         paymentPlanService.updatePaymentPlan(reqVO);
@@ -131,7 +118,7 @@ public class PaymentPlanController {
     }
 
     @DeleteMapping("/delete")
-    @Operation(summary = "删除收付款计划")
+    @Operation(summary = "删除收付款计划（仅未付款允许删除）")
     @Parameter(name = "id", description = "编号", required = true)
     @PreAuthorize("@ss.hasPermission('erp:payment-plan:delete')")
     public CommonResult<Boolean> deletePaymentPlan(@RequestParam("id") Long id) {
@@ -140,7 +127,7 @@ public class PaymentPlanController {
     }
 
     @PutMapping("/partial-pay")
-    @Operation(summary = "部分付款")
+    @Operation(summary = "部分付款（进入部分付款或已付款状态）")
     @PreAuthorize("@ss.hasPermission('erp:payment-plan:pay')")
     public CommonResult<Boolean> partialPay(@RequestParam("id") Long id,
                                              @RequestParam("amount") BigDecimal amount,
@@ -155,6 +142,14 @@ public class PaymentPlanController {
     @PreAuthorize("@ss.hasPermission('erp:payment-plan:query')")
     public CommonResult<List<ReconcileSummaryVO>> getReconcileSummary(@RequestParam("type") Integer type) {
         return success(paymentPlanService.getReconcileSummary(type));
+    }
+
+    @GetMapping("/available-order-list")
+    @Operation(summary = "获取收付款计划可分配订单列表")
+    @Parameter(name = "type", description = "类型：0=应付 1=应收", required = true)
+    @PreAuthorize("@ss.hasPermission('erp:payment-plan:query')")
+    public CommonResult<List<PaymentPlanAvailableOrderRespVO>> getAvailableOrderList(@RequestParam("type") Integer type) {
+        return success(paymentPlanService.getAvailableOrderList(type));
     }
 
     /**

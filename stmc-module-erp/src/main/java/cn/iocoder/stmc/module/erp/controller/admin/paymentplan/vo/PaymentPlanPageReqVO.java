@@ -22,19 +22,19 @@ public class PaymentPlanPageReqVO extends PageParam {
     @Schema(description = "供应商编号", example = "1")
     private Long supplierId;
 
-    @Schema(description = "状态(0待付款 10已付款 20已逾期 30已取消)", example = "0")
+    @Schema(description = "状态(0待付款 5部分付款 10已付款 20已逾期-历史兼容 30已取消-历史兼容)", example = "0")
     private Integer status;
 
-    @Schema(description = "状态列表（多状态筛选）", example = "[0, 20]")
+    @Schema(description = "状态列表（多状态筛选）", example = "[0, 5]")
     private List<Integer> statusList;
 
-    @Schema(description = "计划日期开始", example = "2024-01-01")
+    @Schema(description = "实际付款/收款日期开始", example = "2024-01-01")
     @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY)
-    private LocalDate planDateStart;
+    private LocalDate actualDateStart;
 
-    @Schema(description = "计划日期结束", example = "2024-01-31")
+    @Schema(description = "实际付款/收款日期结束", example = "2024-01-31")
     @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY)
-    private LocalDate planDateEnd;
+    private LocalDate actualDateEnd;
 
     @Schema(description = "类型：0=应付 1=应收", example = "0")
     private Integer type;

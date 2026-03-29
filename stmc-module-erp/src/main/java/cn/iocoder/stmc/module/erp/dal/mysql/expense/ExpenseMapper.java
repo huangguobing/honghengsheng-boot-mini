@@ -22,7 +22,7 @@ public interface ExpenseMapper extends BaseMapperX<ExpenseDO> {
         return selectPage(reqVO, new LambdaQueryWrapperX<ExpenseDO>()
                 .eqIfPresent(ExpenseDO::getOrderId, reqVO.getOrderId())
                 .betweenIfPresent(ExpenseDO::getExpenseDate, reqVO.getExpenseDate())
-                .orderByDesc(ExpenseDO::getCreateTime));
+                .orderByDesc(ExpenseDO::getId));
     }
 
     default List<ExpenseDO> selectListByOrderId(Long orderId) {

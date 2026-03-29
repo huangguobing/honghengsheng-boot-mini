@@ -2,16 +2,15 @@ package cn.iocoder.stmc.module.erp.service.paymentplan;
 
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPageReqVO;
-import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPreviewVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanAvailableOrderRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSaveReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.ReconcileSummaryVO;
 
 import javax.validation.Valid;
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.Collection;
 import java.util.List;
 
 /**
@@ -20,16 +19,6 @@ import java.util.List;
  * @author stmc
  */
 public interface PaymentPlanService {
-
-    /**
-     * 预览付款计划（根据供应商账期配置预计算分期）
-     *
-     * @param supplierId 供应商编号
-     * @param totalAmount 付款总金额
-     * @param paymentDate 付款日期（作为计算账期的起始日期）
-     * @return 付款计划预览列表
-     */
-    List<PaymentPlanPreviewVO> previewPaymentPlans(Long supplierId, BigDecimal totalAmount, LocalDate paymentDate);
 
     /**
      * 根据付款单生成付款计划
@@ -137,12 +126,6 @@ public interface PaymentPlanService {
     void updatePaymentPlanFromCostEdit(Long paymentId, BigDecimal newAmount,
                                         LocalDate newPlanDate, Boolean newIsPaid);
 
-    /**
-     * 根据付款计划ID列表删除相关通知
-     *
-     * @param planIds 付款计划ID列表
-     */
-    void deleteNotificationsByPlanIds(Collection<Long> planIds);
 
     // ========== 鸿恒盛扩展：灵活收付款计划 ==========
 
@@ -177,4 +160,9 @@ public interface PaymentPlanService {
      * @return 汇总列表
      */
     List<ReconcileSummaryVO> getReconcileSummary(Integer type);
+
+    /**
+     * 获取收付款计划可分配订单列表
+     */
+    List<PaymentPlanAvailableOrderRespVO> getAvailableOrderList(Integer type);
 }

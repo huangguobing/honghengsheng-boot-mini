@@ -13,9 +13,10 @@ import lombok.Getter;
 public enum PaymentPlanStatusEnum {
 
     PENDING(0, "待付款"),
+    PARTIAL(5, "部分付款"),
     PAID(10, "已付款"),
-    OVERDUE(20, "已逾期"),
-    CANCELLED(30, "已取消");
+    OVERDUE(20, "已逾期"), // 仅历史兼容
+    CANCELLED(30, "已取消"); // 仅历史兼容
 
     private final Integer status;
     private final String name;

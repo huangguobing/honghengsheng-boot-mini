@@ -43,11 +43,10 @@ public class PaymentPlanSaveReqVO {
     @Schema(description = "收付方式：1=对公 2=对私 3=现金 4=微信 5=支付宝 6=承兑", example = "1")
     private Integer paymentMethod;
 
-    @Schema(description = "计划日期", requiredMode = Schema.RequiredMode.REQUIRED, example = "2024-01-08")
-    @NotNull(message = "计划日期不能为空")
+    @Schema(description = "历史计划日期（兼容保留）", example = "2024-01-08")
     private LocalDate planDate;
 
-    @Schema(description = "状态：0=待付款 10=已付款", example = "0")
+    @Schema(description = "状态：0=待付款 5=部分付款 10=已付款 30=已取消(历史兼容)", example = "0")
     private Integer status;
 
     @Schema(description = "备注", example = "第一期付款")

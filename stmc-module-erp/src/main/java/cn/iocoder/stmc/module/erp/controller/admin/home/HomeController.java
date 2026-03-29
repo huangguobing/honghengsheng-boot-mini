@@ -30,7 +30,6 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
-import java.util.Arrays;
 import java.util.List;
 
 import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
@@ -85,15 +84,15 @@ public class HomeController {
             respVO.setCustomerCount(customerMapper.selectCountByCreator(String.valueOf(userId)));
         }
 
-        // 供应商数和待付款数只有管理员可见
+        // 供应商数只有管理员可见；付款计划提醒入口本期隐藏
         if (isAdmin) {
             respVO.setSupplierCount(supplierMapper.selectCount());
-            respVO.setPendingPaymentPlanCount(paymentPlanMapper.selectCountByStatuses(
-                    PaymentPlanStatusEnum.PENDING.getStatus(), PaymentPlanStatusEnum.OVERDUE.getStatus()));
+            respVO.setPendingPaymentPlanCount(null);
         } else {
             respVO.setSupplierCount(null);
             respVO.setPendingPaymentPlanCount(null);
         }
+
 
         // 根据角色确定订单类别
         boolean isRoleB = permissionApi.hasAnyRoles(userId, ROLE_B);
@@ -150,37 +149,10 @@ public class HomeController {
 
         // ========== 鸿恒盛适配指标（仅管理员） ==========
         if (isAdmin) {
-            // 待收款 = 收款计划(type=1) 中待付款+逾期的 (planAmount - paidAmount) 汇总
-            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingReceivableQuery =
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO>()
-                            .eq(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getType, 1)
-                            .in(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getStatus,
-                                    PaymentPlanStatusEnum.PENDING.getStatus(), PaymentPlanStatusEnum.OVERDUE.getStatus());
-            List<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingReceivablePlans =
-                    paymentPlanMapper.selectList(pendingReceivableQuery);
-            BigDecimal pendingReceivable = BigDecimal.ZERO;
-            for (cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO p : pendingReceivablePlans) {
-                BigDecimal plan = p.getPlanAmount() != null ? p.getPlanAmount() : BigDecimal.ZERO;
-                BigDecimal paid = p.getPaidAmount() != null ? p.getPaidAmount() : BigDecimal.ZERO;
-                pendingReceivable = pendingReceivable.add(plan.subtract(paid));
-            }
-            respVO.setPendingReceivableAmount(pendingReceivable);
+            // 本期隐藏付款计划提醒相关金额入口
+            respVO.setPendingReceivableAmount(null);
+            respVO.setPendingPayableAmount(null);
 
-            // 待付款 = 付款计划(type=0) 中待付款+逾期的 (planAmount - paidAmount) 汇总
-            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingPayableQuery =
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO>()
-                            .eq(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getType, 0)
-                            .in(cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO::getStatus,
-                                    PaymentPlanStatusEnum.PENDING.getStatus(), PaymentPlanStatusEnum.OVERDUE.getStatus());
-            List<cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO> pendingPayablePlans =
-                    paymentPlanMapper.selectList(pendingPayableQuery);
-            BigDecimal pendingPayable = BigDecimal.ZERO;
-            for (cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO p : pendingPayablePlans) {
-                BigDecimal plan = p.getPlanAmount() != null ? p.getPlanAmount() : BigDecimal.ZERO;
-                BigDecimal paid = p.getPaidAmount() != null ? p.getPaidAmount() : BigDecimal.ZERO;
-                pendingPayable = pendingPayable.add(plan.subtract(paid));
-            }
-            respVO.setPendingPayableAmount(pendingPayable);
 
             // 本月采购单数
             com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PurchaseOrderDO> monthPurchaseQuery =
@@ -192,8 +164,7 @@ public class HomeController {
             // 未核销发票数
             com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VoucherDO> unrecQuery =
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VoucherDO>()
-                            .eq(VoucherDO::getReconcileStatus, 0)
-                            .in(VoucherDO::getVoucherType, Arrays.asList(1, 2));
+                            .eq(VoucherDO::getReconcileStatus, 0);
             respVO.setUnreconcileInvoiceCount(voucherMapper.selectCount(unrecQuery));
         }
 

@@ -1,11 +1,13 @@
 package cn.iocoder.stmc.module.erp.controller.admin.statistics;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.util.StrUtil;
 import cn.iocoder.stmc.framework.common.pojo.CommonResult;
-import cn.iocoder.stmc.framework.common.pojo.PageParam;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.CustomerStatisticsRespVO;
+import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.InvoiceSummaryGroupRespVO;
+import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.InvoiceSummaryItemRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.InvoiceSummaryRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.OrderItemStatisticsRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.statistics.vo.ProductSalesRespVO;
@@ -42,6 +44,9 @@ import javax.annotation.Resource;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -209,10 +214,10 @@ public class StatisticsController {
             totalReceivable = totalReceivable.add(o.getPayableAmount() != null ? o.getPayableAmount() : BigDecimal.ZERO);
         }
 
-        // 已收金额：从收款计划（type=1）中统计已付清的金额
+        // 已收金额：从收款计划（type=1）中统计累计已收金额
         LambdaQueryWrapper<PaymentPlanDO> receivedQuery = new LambdaQueryWrapper<PaymentPlanDO>()
                 .eq(PaymentPlanDO::getType, 1)
-                .eq(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.PAID.getStatus())
+                .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
                 .ge(startTime != null, PaymentPlanDO::getCreateTime, startTime)
                 .lt(endTime != null, PaymentPlanDO::getCreateTime, endTime);
         List<PaymentPlanDO> receivedPlans = paymentPlanMapper.selectList(receivedQuery);
@@ -252,47 +257,97 @@ public class StatisticsController {
     public CommonResult<InvoiceSummaryRespVO> getInvoiceSummary(
             @RequestParam(required = false) @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY) LocalDate endDate) {
-        // 查询所有发票类型凭证
-        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VoucherDO> query =
-                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VoucherDO>()
-                        .in(VoucherDO::getVoucherType, 1, 2) // 专用发票+普通发票
-                        .ge(startDate != null, VoucherDO::getInvoiceDate, startDate)
-                        .le(endDate != null, VoucherDO::getInvoiceDate, endDate);
-        List<VoucherDO> vouchers = voucherMapper.selectList(query);
+        LambdaQueryWrapper<VoucherDO> queryWrapper = new LambdaQueryWrapper<VoucherDO>()
+                .ge(startDate != null, VoucherDO::getInvoiceDate, startDate)
+                .le(endDate != null, VoucherDO::getInvoiceDate, endDate)
+                .orderByDesc(VoucherDO::getInvoiceDate)
+                .orderByDesc(VoucherDO::getId);
+        List<VoucherDO> vouchers = voucherMapper.selectList(queryWrapper);
+
+        Map<Long, String> orderNoMap = buildOrderNoMap(vouchers);
+        List<VoucherDO> incomingVouchers = vouchers.stream()
+                .filter(voucher -> Integer.valueOf(0).equals(voucher.getDirection()))
+                .collect(Collectors.toList());
+        List<VoucherDO> outgoingVouchers = vouchers.stream()
+                .filter(voucher -> Integer.valueOf(1).equals(voucher.getDirection()))
+                .collect(Collectors.toList());
 
         InvoiceSummaryRespVO result = new InvoiceSummaryRespVO();
-        long inCount = 0, outCount = 0, unrecCount = 0;
-        BigDecimal inAmt = BigDecimal.ZERO, inTax = BigDecimal.ZERO;
-        BigDecimal outAmt = BigDecimal.ZERO, outTax = BigDecimal.ZERO;
-        BigDecimal unrecAmt = BigDecimal.ZERO;
+        result.setIncomingCount((long) incomingVouchers.size());
+        result.setIncomingAmount(sumVoucherAmount(incomingVouchers));
+        result.setOutgoingCount((long) outgoingVouchers.size());
+        result.setOutgoingAmount(sumVoucherAmount(outgoingVouchers));
+        result.setIncomingGroups(buildInvoiceSummaryGroups(incomingVouchers, orderNoMap));
+        result.setOutgoingGroups(buildInvoiceSummaryGroups(outgoingVouchers, orderNoMap));
+        return success(result);
+    }
 
-        for (VoucherDO v : vouchers) {
-            BigDecimal amt = v.getAmount() != null ? v.getAmount() : BigDecimal.ZERO;
-            BigDecimal tax = v.getTaxAmount() != null ? v.getTaxAmount() : BigDecimal.ZERO;
-            if (Integer.valueOf(0).equals(v.getDirection())) { // 进项
-                inCount++;
-                inAmt = inAmt.add(amt);
-                inTax = inTax.add(tax);
-            } else { // 销项
-                outCount++;
-                outAmt = outAmt.add(amt);
-                outTax = outTax.add(tax);
-            }
-            if (Integer.valueOf(0).equals(v.getReconcileStatus())) { // 未核销
-                unrecCount++;
-                unrecAmt = unrecAmt.add(amt);
-            }
+    private Map<Long, String> buildOrderNoMap(List<VoucherDO> vouchers) {
+        Set<Long> orderIds = vouchers.stream()
+                .map(VoucherDO::getOrderId)
+                .filter(id -> id != null)
+                .collect(Collectors.toSet());
+        if (CollUtil.isEmpty(orderIds)) {
+            return new LinkedHashMap<>();
+        }
+        return orderMapper.selectBatchIds(orderIds).stream()
+                .collect(Collectors.toMap(OrderDO::getId, OrderDO::getOrderNo));
+    }
+
+    private BigDecimal sumVoucherAmount(List<VoucherDO> vouchers) {
+        return vouchers.stream()
+                .map(this::getVoucherAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private List<InvoiceSummaryGroupRespVO> buildInvoiceSummaryGroups(List<VoucherDO> vouchers,
+                                                                      Map<Long, String> orderNoMap) {
+        if (CollUtil.isEmpty(vouchers)) {
+            return new ArrayList<>();
         }
 
-        result.setIncomingCount(inCount);
-        result.setIncomingAmount(inAmt);
-        result.setIncomingTaxAmount(inTax);
-        result.setOutgoingCount(outCount);
-        result.setOutgoingAmount(outAmt);
-        result.setOutgoingTaxAmount(outTax);
-        result.setUnreconcileCount(unrecCount);
-        result.setUnreconcileAmount(unrecAmt);
-        return success(result);
+        Map<String, List<VoucherDO>> groupMap = vouchers.stream()
+                .collect(Collectors.groupingBy(voucher -> StrUtil.blankToDefault(voucher.getInvoiceCode(), ""),
+                        LinkedHashMap::new, Collectors.toList()));
+
+        return groupMap.entrySet().stream()
+                .map(entry -> buildInvoiceSummaryGroup(entry.getKey(), entry.getValue(), orderNoMap))
+                .sorted(Comparator.comparing(InvoiceSummaryGroupRespVO::getAmount, Comparator.nullsFirst(BigDecimal::compareTo)).reversed()
+                        .thenComparing(group -> StrUtil.nullToDefault(group.getInvoiceCode(), "")))
+                .collect(Collectors.toList());
+    }
+
+    private InvoiceSummaryGroupRespVO buildInvoiceSummaryGroup(String invoiceCode,
+                                                               List<VoucherDO> vouchers,
+                                                               Map<Long, String> orderNoMap) {
+        InvoiceSummaryGroupRespVO group = new InvoiceSummaryGroupRespVO();
+        group.setInvoiceCode(invoiceCode);
+        group.setDisplayCode(StrUtil.isBlank(invoiceCode) ? "未填写发票代码" : invoiceCode);
+        group.setCount((long) vouchers.size());
+        group.setAmount(sumVoucherAmount(vouchers));
+        group.setItems(vouchers.stream()
+                .map(voucher -> buildInvoiceSummaryItem(voucher, orderNoMap))
+                .collect(Collectors.toList()));
+        return group;
+    }
+
+    private InvoiceSummaryItemRespVO buildInvoiceSummaryItem(VoucherDO voucher, Map<Long, String> orderNoMap) {
+        InvoiceSummaryItemRespVO item = new InvoiceSummaryItemRespVO();
+        item.setId(voucher.getId());
+        item.setOrderId(voucher.getOrderId());
+        item.setOrderNo(orderNoMap.get(voucher.getOrderId()));
+        item.setCounterparty(voucher.getCounterparty());
+        item.setVoucherType(voucher.getVoucherType());
+        item.setAmount(getVoucherAmount(voucher));
+        item.setInvoiceDate(voucher.getInvoiceDate());
+        item.setReconcileStatus(voucher.getReconcileStatus());
+        item.setRemark(voucher.getRemark());
+        return item;
+    }
+
+    private BigDecimal getVoucherAmount(VoucherDO voucher) {
+
+        return voucher.getAmount() != null ? voucher.getAmount() : BigDecimal.ZERO;
     }
 
     /**

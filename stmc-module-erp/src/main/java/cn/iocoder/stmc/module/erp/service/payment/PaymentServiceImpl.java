@@ -128,11 +128,8 @@ public class PaymentServiceImpl implements PaymentService {
 
         // 判断状态
         Integer newStatus;
-        if (validCount == 0) {
-            // 所有计划都被取消了
-            newStatus = PaymentStatusEnum.CANCELLED.getStatus();
-        } else if (paidCount == 0) {
-            // 没有付款
+        if (validCount == 0 || paidCount == 0) {
+            // 没有有效付款进度时统一视为待付款
             newStatus = PaymentStatusEnum.PENDING.getStatus();
         } else if (paidCount >= validCount) {
             // 全部付款完成
@@ -162,7 +159,7 @@ public class PaymentServiceImpl implements PaymentService {
         if (paymentPlanService.hasPaidPlansByPaymentId(id)) {
             throw exception(PAYMENT_HAS_PAID_PLAN);
         }
-        // 取消关联的付款计划
+        // 删除关联的未付款付款计划
         paymentPlanService.cancelByPaymentId(id);
         // 删除
         paymentMapper.deleteById(id);
@@ -259,14 +256,9 @@ public class PaymentServiceImpl implements PaymentService {
             throw exception(PAYMENT_ALREADY_PAID_CANNOT_CANCEL);
         }
 
-        // 3. 更新付款单状态为已取消
-        PaymentDO updatePayment = new PaymentDO();
-        updatePayment.setId(payment.getId());
-        updatePayment.setStatus(PaymentStatusEnum.CANCELLED.getStatus());
-        paymentMapper.updateById(updatePayment);
-
-        // 4. 取消关联的付款计划
+        // 3. 删除关联的未付款付款计划并删除付款单
         paymentPlanService.cancelPaymentPlansByPaymentId(payment.getId());
+        paymentMapper.deleteById(payment.getId());
     }
 
     @Override

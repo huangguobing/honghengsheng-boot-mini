@@ -38,6 +38,7 @@ import cn.iocoder.stmc.module.system.api.user.AdminUserApi;
 import cn.iocoder.stmc.module.system.api.user.dto.AdminUserRespDTO;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.ss.util.RegionUtil;
 import org.apache.poi.xssf.usermodel.XSSFRichTextString;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.context.annotation.Lazy;
@@ -286,13 +287,7 @@ public class OrderServiceImpl implements OrderService {
         // 校验存在
         OrderDO order = validateOrderExists(id);
 
-        // 1. 删除关联通知（根据付款计划ID）
-        List<Long> planIds = paymentPlanMapper.selectListByOrderId(id).stream()
-                .map(PaymentPlanDO::getId)
-                .collect(Collectors.toList());
-        if (!planIds.isEmpty()) {
-            paymentPlanService.deleteNotificationsByPlanIds(planIds);
-        }
+        // 1. 删除应收/应付付款计划（通知机制已停用，无需再删通知）
 
         // 2. 删除应收/应付付款计划
         paymentPlanMapper.deleteByOrderId(id);
@@ -793,37 +788,18 @@ public class OrderServiceImpl implements OrderService {
         for (PaymentDO payment : existingPayments) {
             List<PaymentPlanDO> plans = paymentPlanMapper.selectListByPaymentId(payment.getId());
 
-            // 检查是否有已付款的计划
+            // 检查是否存在已付款或部分付款的计划
             boolean hasPaidPlan = plans.stream()
-                    .anyMatch(p -> PaymentPlanStatusEnum.PAID.getStatus().equals(p.getStatus()));
+                    .anyMatch(p -> PaymentPlanStatusEnum.PAID.getStatus().equals(p.getStatus())
+                            || PaymentPlanStatusEnum.PARTIAL.getStatus().equals(p.getStatus()));
 
             if (hasPaidPlan) {
-                // 已付款 - 逻辑取消，保留审计记录
-                PaymentDO update = new PaymentDO();
-                update.setId(payment.getId());
-                update.setStatus(PaymentStatusEnum.CANCELLED.getStatus());
-                update.setRemark((payment.getRemark() != null ? payment.getRemark() + "；" : "")
-                        + "订单编辑时取消，原因：商品信息变更");
-                paymentMapper.updateById(update);
-
-                // 取消未付款的付款计划（不物理删除）
-                for (PaymentPlanDO plan : plans) {
-                    if (!PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
-                        PaymentPlanDO planUpdate = new PaymentPlanDO();
-                        planUpdate.setId(plan.getId());
-                        planUpdate.setStatus(PaymentPlanStatusEnum.CANCELLED.getStatus());
-                        paymentPlanMapper.updateById(planUpdate);
-                    }
-                }
-            } else {
-                // 未付款 - 物理删除
-                List<Long> planIds = plans.stream().map(PaymentPlanDO::getId).collect(Collectors.toList());
-                if (!planIds.isEmpty()) {
-                    paymentPlanService.deleteNotificationsByPlanIds(planIds);
-                }
-                paymentPlanMapper.deleteByPaymentId(payment.getId());
-                paymentMapper.deleteById(payment.getId());
+                throw exception(ORDER_STATUS_NOT_ALLOW_UPDATE);
             }
+
+            // 未付款 - 直接删除并按新供应商重新生成
+            paymentPlanMapper.deleteByPaymentId(payment.getId());
+            paymentMapper.deleteById(payment.getId());
         }
 
         // 7.2 按新的供应商分组重新生成付款单
@@ -1155,19 +1131,20 @@ public class OrderServiceImpl implements OrderService {
         // 2. 创建工作簿
         Workbook workbook = new XSSFWorkbook();
         Sheet sheet = workbook.createSheet("发货单");
+        sheet.setDisplayGridlines(false); // 隐藏网格线，数据表格用显式边框，底部条款无边框
 
         // 3. 设置列宽（11列：序号|产品名称|材质|规格|计价单位|数量|重量|销售单价|销售金额|品牌|备注）
-        sheet.setColumnWidth(0, (int)(5.0 * 256));    // A：序号
+        sheet.setColumnWidth(0, (int)(4.5 * 256));    // A：序号
         sheet.setColumnWidth(1, (int)(16.0 * 256));   // B：产品名称
-        sheet.setColumnWidth(2, (int)(8.0 * 256));    // C：材质
-        sheet.setColumnWidth(3, (int)(14.0 * 256));   // D：规格
-        sheet.setColumnWidth(4, (int)(8.0 * 256));    // E：计价单位
-        sheet.setColumnWidth(5, (int)(7.0 * 256));    // F：数量
+        sheet.setColumnWidth(2, (int)(7.0 * 256));    // C：材质
+        sheet.setColumnWidth(3, (int)(18.0 * 256));   // D：规格（如HN400*200*8*13）
+        sheet.setColumnWidth(4, (int)(7.0 * 256));    // E：计价单位
+        sheet.setColumnWidth(5, (int)(6.0 * 256));    // F：数量
         sheet.setColumnWidth(6, (int)(9.0 * 256));    // G：重量
         sheet.setColumnWidth(7, (int)(11.0 * 256));   // H：销售单价
         sheet.setColumnWidth(8, (int)(12.0 * 256));   // I：销售金额
-        sheet.setColumnWidth(9, (int)(7.0 * 256));    // J：品牌
-        sheet.setColumnWidth(10, (int)(18.0 * 256));  // K：备注
+        sheet.setColumnWidth(9, (int)(6.0 * 256));    // J：品牌
+        sheet.setColumnWidth(10, (int)(22.0 * 256));  // K：备注（如6-28#厂房氮气管道）
 
         // 4. 创建样式
         CellStyle titleStyle = createCenterTextStyle(workbook, 18);       // 中文标题
@@ -1182,40 +1159,85 @@ public class OrderServiceImpl implements OrderService {
 
         int rowIndex = 0;
 
-        // 5. 第1行：中文标题
-        Row titleRow = sheet.createRow(rowIndex++);
-        titleRow.setHeightInPoints(30f);
-        Cell titleCell = titleRow.createCell(0);
-        titleCell.setCellValue("四川鸿恒盛供应链管理有限公司销售单及欠款协议（代合同）");
-        CellStyle titleBoldStyle = createCenterTextStyle(workbook, 18);
-        Font titleFont = workbook.createFont();
-        titleFont.setFontName("宋体");
-        titleFont.setFontHeightInPoints((short) 18);
-        titleFont.setBold(true);
-        titleBoldStyle.setFont(titleFont);
-        titleCell.setCellStyle(titleBoldStyle);
-        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, 10));
+        // 5. 第1-2行合并：中文标题 + 英文副标题（富文本，换行在同一单元格）
+        Row titleRow1 = sheet.createRow(rowIndex++);
+        Row titleRow2 = sheet.createRow(rowIndex++);
+        titleRow1.setHeightInPoints(28f);
+        titleRow2.setHeightInPoints(24f);
 
-        // 6. 第2行：英文副标题
-        Row subtitleRow = sheet.createRow(rowIndex++);
-        subtitleRow.setHeightInPoints(22f);
-        Cell subtitleCell = subtitleRow.createCell(0);
-        subtitleCell.setCellValue("Sichuan Honghengsheng Supply Chain Management Co. Ltd");
-        subtitleCell.setCellStyle(subtitleStyle);
-        sheet.addMergedRegion(new CellRangeAddress(1, 1, 0, 10));
+        String cnTitle = "四川鸿恒盛供应链管理有限公司销售单及欠款协议（代合同）";
+        String enTitle = "Sichuan Honghengsheng Supply Chain Management Co. Ltd";
+        XSSFRichTextString titleRichText = new XSSFRichTextString(cnTitle + "\n" + enTitle);
+
+        // 中文部分：宋体18磅加粗
+        Font cnFont = workbook.createFont();
+        cnFont.setFontName("宋体");
+        cnFont.setFontHeightInPoints((short) 18);
+        cnFont.setBold(true);
+        titleRichText.applyFont(0, cnTitle.length(), cnFont);
+
+        // 英文部分：黑体14磅加粗
+        Font enFont = workbook.createFont();
+        enFont.setFontName("黑体");
+        enFont.setFontHeightInPoints((short) 14);
+        enFont.setBold(true);
+        titleRichText.applyFont(cnTitle.length() + 1, cnTitle.length() + 1 + enTitle.length(), enFont);
+
+        // 标题样式（居中、换行、白色填充遮住网格线，不设cell边框）
+        CellStyle titleMergedStyle = workbook.createCellStyle();
+        titleMergedStyle.setAlignment(HorizontalAlignment.CENTER);
+        titleMergedStyle.setVerticalAlignment(VerticalAlignment.CENTER);
+        titleMergedStyle.setWrapText(true);
+        titleMergedStyle.setFillForegroundColor(IndexedColors.WHITE.getIndex());
+        titleMergedStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+        // 为标题合并区域的所有cell设置样式
+        for (int i = 0; i <= 10; i++) {
+            titleRow1.createCell(i).setCellStyle(titleMergedStyle);
+        }
+        for (int i = 0; i <= 10; i++) {
+            titleRow2.createCell(i).setCellStyle(titleMergedStyle);
+        }
+        titleRow1.getCell(0).setCellValue(titleRichText);
+        CellRangeAddress titleRegion = new CellRangeAddress(0, 1, 0, 10);
+        sheet.addMergedRegion(titleRegion);
+        RegionUtil.setBorderTop(BorderStyle.THIN, titleRegion, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, titleRegion, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, titleRegion, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, titleRegion, sheet);
 
         // 7. 第3行：客户名称（左） + 提货车号（右）
+        // 白色填充样式（无cell边框）
+        CellStyle infoLeftFill = workbook.createCellStyle();
+        infoLeftFill.cloneStyleFrom(infoStyleLeft);
+        infoLeftFill.setFillForegroundColor(IndexedColors.WHITE.getIndex());
+        infoLeftFill.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+        CellStyle infoRightFill = workbook.createCellStyle();
+        infoRightFill.cloneStyleFrom(infoStyleRight);
+        infoRightFill.setFillForegroundColor(IndexedColors.WHITE.getIndex());
+        infoRightFill.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
         Row infoRow = sheet.createRow(rowIndex++);
         infoRow.setHeightInPoints(20f);
-        Cell customerCell = infoRow.createCell(0);
-        customerCell.setCellValue("客户名称：" + customerName);
-        customerCell.setCellStyle(infoStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(2, 2, 0, 5));
-
-        Cell vehicleCell = infoRow.createCell(6);
-        vehicleCell.setCellValue("提货车号：" + vehicleNo);
-        vehicleCell.setCellStyle(infoStyleRight);
-        sheet.addMergedRegion(new CellRangeAddress(2, 2, 6, 10));
+        for (int i = 0; i <= 10; i++) {
+            Cell c = infoRow.createCell(i);
+            c.setCellStyle(i <= 5 ? infoLeftFill : infoRightFill);
+        }
+        infoRow.getCell(0).setCellValue("客户名称：" + customerName);
+        infoRow.getCell(6).setCellValue("提货车号：" + vehicleNo);
+        CellRangeAddress infoLeftRegion = new CellRangeAddress(2, 2, 0, 5);
+        CellRangeAddress infoRightRegion = new CellRangeAddress(2, 2, 6, 10);
+        sheet.addMergedRegion(infoLeftRegion);
+        sheet.addMergedRegion(infoRightRegion);
+        RegionUtil.setBorderTop(BorderStyle.THIN, infoLeftRegion, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, infoLeftRegion, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, infoLeftRegion, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, infoLeftRegion, sheet);
+        RegionUtil.setBorderTop(BorderStyle.THIN, infoRightRegion, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, infoRightRegion, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, infoRightRegion, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, infoRightRegion, sheet);
 
         // 8. 表头行
         Row headerRow = sheet.createRow(rowIndex++);
@@ -1376,59 +1398,56 @@ public class OrderServiceImpl implements OrderService {
         }
         sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
 
-        // 12. 条款（4条）
-        String[] terms = {
+        // 12. 条款区域
+        CellStyle termStyle10 = createMergedRowBorderStyle(workbook, 10);  // 条款文字10磅
+        CellStyle termStyle11 = createMergedRowBorderStyle(workbook, 11);  // 送货签收11磅
+        int termsStartRow = rowIndex; // 记录条款区域起始行
+
+        // 一、
+        createFullMergedRow(sheet, rowIndex++, 16f,
             "一、凡在我公司购货的欠款用户，无论自提，委托供方代运，所欠货款按以下协议执行：",
+            termStyle10, 10);
+
+        // 二、（较长，需要2行高度显示换行）
+        createFullMergedRow(sheet, rowIndex++, 28f,
             "二、需方所欠供方货款，必须按供方指定的时间即   年  月  日前付清。如果到期未付清欠款，则供方按每日欠款的0.1%加收需方滞纳金。如不能协商解决的，由供方所在地金牛区法院解决；",
+            termStyle10, 10);
+
+        // 三、
+        createFullMergedRow(sheet, rowIndex++, 16f,
             "三、需方购货收到货品3日内对质量提出异议，未提出，视为合格。如异议参照钢厂处理意见协商解决。",
-            "四、本协议一式叁份，需方留底一份。收货单位签收人签字后生效，具有法律效力。"
-        };
-        for (String term : terms) {
-            Row termRow = sheet.createRow(rowIndex++);
-            termRow.setHeightInPoints(16f);
-            Cell termCell = termRow.createCell(0);
-            termCell.setCellValue(term);
-            termCell.setCellStyle(normalStyleLeft);
-            sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
-        }
+            termStyle10, 10);
 
-        // 13. 地址+电话行
-        Row addrRow = sheet.createRow(rowIndex++);
-        addrRow.setHeightInPoints(16f);
-        Cell addrCell = addrRow.createCell(0);
-        addrCell.setCellValue("地址：成都市金牛区量力钢材城B座1909   电话：19302852518");
-        addrCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
+        // 四、
+        createFullMergedRow(sheet, rowIndex++, 16f,
+            "四、本协议一式叁份，需方留底一份。收货单位签收人签字后生效，具有法律效力。",
+            termStyle10, 10);
 
-        // 14. 空行
-        sheet.createRow(rowIndex++);
+        // 地址+电话
+        createFullMergedRow(sheet, rowIndex++, 16f,
+            "地址：成都市金牛区量力钢材城B座1909   电话：19302852518",
+            termStyle10, 10);
 
-        // 15. 送货单位及经手人 | 签收单位及经手人
-        Row signRow1 = sheet.createRow(rowIndex++);
-        signRow1.setHeightInPoints(20f);
-        Cell sendCell = signRow1.createCell(0);
-        sendCell.setCellValue("送货单位及经手人（盖章）：四川鸿恒盛供应链管理有限公司");
-        sendCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 5));
+        // 空行（也填充白色样式，保持区域内部干净）
+        createFullMergedRow(sheet, rowIndex++, 10f, "", termStyle10, 10);
 
-        Cell recvCell = signRow1.createCell(6);
-        recvCell.setCellValue("签收单位及经手人（盖章）：");
-        recvCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
+        // 13. 送货单位及经手人 + 签收单位及经手人
+        createFullMergedRow(sheet, rowIndex++, 20f,
+            "送货单位及经手人（盖章）：四川鸿恒盛供应链管理有限公司                    签收单位及经手人（盖章）：",
+            termStyle11, 10);
 
-        // 16. 送货时间 | 签收时间
-        Row signRow2 = sheet.createRow(rowIndex++);
-        signRow2.setHeightInPoints(20f);
+        // 14. 送货时间 + 签收时间
         String dateText = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-M-d"));
-        Cell sendDateCell = signRow2.createCell(0);
-        sendDateCell.setCellValue("送货时间：" + dateText);
-        sendDateCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 5));
+        createFullMergedRow(sheet, rowIndex++, 20f,
+            "送货时间：" + dateText + "                                        签收时间：",
+            termStyle11, 10);
 
-        Cell recvDateCell = signRow2.createCell(6);
-        recvDateCell.setCellValue("签收时间：");
-        recvDateCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
+        // 15. 给整个条款区域加一个外框边框（无内部分割线）
+        CellRangeAddress termsRegion = new CellRangeAddress(termsStartRow, rowIndex - 1, 0, 10);
+        RegionUtil.setBorderTop(BorderStyle.THIN, termsRegion, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, termsRegion, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, termsRegion, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, termsRegion, sheet);
 
         // 17. 设置响应头并输出
         String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
@@ -1444,7 +1463,7 @@ public class OrderServiceImpl implements OrderService {
 
     /**
      * B角色 送货清单导出（熙汇达鑫模板）
-     * 11列：序号|产品名称|规格|材质|数量/根/张|长度/米|重量/吨|厂家|卸货位置|总米数|车号
+     * 11列：序号|产品名称|规格|材质|数量/根/张|长度/米|重量/吨|品牌|卸货位置|总米数|车号
      */
     private void generateSubOrderPrintExcel(OrderDO order, List<OrderItemDO> items,
                                              HttpServletResponse response) throws IOException {
@@ -1468,19 +1487,20 @@ public class OrderServiceImpl implements OrderService {
         // 2. 创建工作簿
         Workbook workbook = new XSSFWorkbook();
         Sheet sheet = workbook.createSheet("送货清单");
+        sheet.setDisplayGridlines(false); // 隐藏网格线
 
-        // 3. 设置列宽（11列）
+        // 3. 设置列宽（11列，参照模板比例）
         sheet.setColumnWidth(0, (int)(5.0 * 256));    // A：序号
-        sheet.setColumnWidth(1, (int)(16.0 * 256));   // B：产品名称
-        sheet.setColumnWidth(2, (int)(14.0 * 256));   // C：规格
-        sheet.setColumnWidth(3, (int)(8.0 * 256));    // D：材质
-        sheet.setColumnWidth(4, (int)(10.0 * 256));   // E：数量/根/张
+        sheet.setColumnWidth(1, (int)(18.0 * 256));   // B：产品名称
+        sheet.setColumnWidth(2, (int)(18.0 * 256));   // C：规格
+        sheet.setColumnWidth(3, (int)(9.0 * 256));    // D：材质
+        sheet.setColumnWidth(4, (int)(13.0 * 256));   // E：数量/根/张
         sheet.setColumnWidth(5, (int)(9.0 * 256));    // F：长度/米
-        sheet.setColumnWidth(6, (int)(9.0 * 256));    // G：重量/吨
-        sheet.setColumnWidth(7, (int)(10.0 * 256));   // H：厂家
-        sheet.setColumnWidth(8, (int)(10.0 * 256));   // I：卸货位置
-        sheet.setColumnWidth(9, (int)(9.0 * 256));    // J：总米数
-        sheet.setColumnWidth(10, (int)(10.0 * 256));  // K：车号
+        sheet.setColumnWidth(6, (int)(10.0 * 256));   // G：重量/吨
+        sheet.setColumnWidth(7, (int)(18.0 * 256));   // H：品牌
+        sheet.setColumnWidth(8, (int)(18.0 * 256));   // I：卸货位置
+        sheet.setColumnWidth(9, (int)(11.0 * 256));   // J：总米数
+        sheet.setColumnWidth(10, (int)(11.0 * 256));  // K：车号
 
         // 4. 创建样式
         CellStyle titleBoldStyle = createCenterTextStyle(workbook, 18);
@@ -1489,54 +1509,94 @@ public class OrderServiceImpl implements OrderService {
         bFont.setFontHeightInPoints((short) 18);
         bFont.setBold(true);
         titleBoldStyle.setFont(bFont);
+        titleBoldStyle.setFillForegroundColor(IndexedColors.WHITE.getIndex());
+        titleBoldStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
         CellStyle infoStyleLeft = createTextStyleLeft(workbook, 11);
+        infoStyleLeft.setFillForegroundColor(IndexedColors.WHITE.getIndex());
+        infoStyleLeft.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
         CellStyle headerStyle = createHeaderStyle(workbook);
         CellStyle dataCenterStyle = createDataCenterBorderStyle(workbook);
         CellStyle totalBorderStyle = createDataCenterBorderStyle(workbook);
-        CellStyle normalStyleLeft = createTextStyleLeft(workbook, 10);
+        CellStyle termStyle = createMergedRowBorderStyle(workbook, 10);
 
         int rowIndex = 0;
 
-        // 5. 第1行：标题
-        Row titleRow = sheet.createRow(rowIndex++);
-        titleRow.setHeightInPoints(32f);
-        Cell titleCell = titleRow.createCell(0);
-        titleCell.setCellValue("四川熙汇达鑫商贸有限公司  送货清单");
-        titleCell.setCellStyle(titleBoldStyle);
-        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, 10));
+        // 第1行：空行（白色填充）
+        Row emptyRow0 = sheet.createRow(rowIndex++);
+        emptyRow0.setHeightInPoints(6f);
+        for (int i = 0; i <= 10; i++) {
+            Cell c = emptyRow0.createCell(i);
+            CellStyle ws = workbook.createCellStyle();
+            ws.setFillForegroundColor(IndexedColors.WHITE.getIndex());
+            ws.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            c.setCellStyle(ws);
+        }
 
-        // 6. 第2行：收货单位 | 项目名称 | 送货日期
+        // 第2行：标题（合并A-K，带外框）
+        Row titleRow = sheet.createRow(rowIndex++);
+        titleRow.setHeightInPoints(36f);
+        for (int i = 0; i <= 10; i++) {
+            titleRow.createCell(i).setCellStyle(titleBoldStyle);
+        }
+        titleRow.getCell(0).setCellValue("四川熙汇达鑫商贸有限公司  送货清单");
+        CellRangeAddress titleRegion = new CellRangeAddress(1, 1, 0, 10);
+        sheet.addMergedRegion(titleRegion);
+        RegionUtil.setBorderTop(BorderStyle.THIN, titleRegion, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, titleRegion, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, titleRegion, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, titleRegion, sheet);
+
+        // 第3行：收货单位 | 项目名称 | 送货日期
         Row infoRow1 = sheet.createRow(rowIndex++);
         infoRow1.setHeightInPoints(20f);
+        for (int i = 0; i <= 10; i++) {
+            infoRow1.createCell(i).setCellStyle(infoStyleLeft);
+        }
 
-        Cell ruCell = infoRow1.createCell(0);
-        ruCell.setCellValue("收货单位：" + receivingUnit);
-        ruCell.setCellStyle(infoStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(1, 1, 0, 3));
+        infoRow1.getCell(0).setCellValue("收货单位：" + receivingUnit);
+        CellRangeAddress infoR1 = new CellRangeAddress(2, 2, 0, 3);
+        sheet.addMergedRegion(infoR1);
+        RegionUtil.setBorderTop(BorderStyle.THIN, infoR1, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, infoR1, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, infoR1, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, infoR1, sheet);
 
-        Cell pnCell = infoRow1.createCell(4);
-        pnCell.setCellValue("项目名称：" + projectName);
-        pnCell.setCellStyle(infoStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(1, 1, 4, 7));
+        infoRow1.getCell(4).setCellValue("项目名称：" + projectName);
+        CellRangeAddress infoR2 = new CellRangeAddress(2, 2, 4, 7);
+        sheet.addMergedRegion(infoR2);
+        RegionUtil.setBorderTop(BorderStyle.THIN, infoR2, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, infoR2, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, infoR2, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, infoR2, sheet);
 
-        Cell ddCell = infoRow1.createCell(8);
-        ddCell.setCellValue("送货日期：" + deliveryDate);
-        ddCell.setCellStyle(infoStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(1, 1, 8, 10));
+        infoRow1.getCell(8).setCellValue("送货日期：" + deliveryDate);
+        CellRangeAddress infoR3 = new CellRangeAddress(2, 2, 8, 10);
+        sheet.addMergedRegion(infoR3);
+        RegionUtil.setBorderTop(BorderStyle.THIN, infoR3, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, infoR3, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, infoR3, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, infoR3, sheet);
 
-        // 7. 第3行：送货地址
+        // 第4行：送货地址（带外框）
         Row infoRow2 = sheet.createRow(rowIndex++);
         infoRow2.setHeightInPoints(20f);
-        Cell addrCell = infoRow2.createCell(0);
-        addrCell.setCellValue("送货地址：" + address);
-        addrCell.setCellStyle(infoStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(2, 2, 0, 10));
+        for (int i = 0; i <= 10; i++) {
+            infoRow2.createCell(i).setCellStyle(infoStyleLeft);
+        }
+        infoRow2.getCell(0).setCellValue("送货地址：" + address);
+        CellRangeAddress addrRegion = new CellRangeAddress(3, 3, 0, 10);
+        sheet.addMergedRegion(addrRegion);
+        RegionUtil.setBorderTop(BorderStyle.THIN, addrRegion, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, addrRegion, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, addrRegion, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, addrRegion, sheet);
 
         // 8. 表头行
         Row headerRow = sheet.createRow(rowIndex++);
         headerRow.setHeightInPoints(22f);
-        String[] headers = {"序号", "产品名称", "规格", "材质", "数量/根/张", "长度/米", "重量/吨", "厂家", "卸货位置", "总米数", "车号"};
+        String[] headers = {"序号", "产品名称", "规格", "材质", "数量/根/张", "长度/米", "重量/吨", "品牌", "卸货位置", "总米数", "车号"};
         for (int i = 0; i < headers.length; i++) {
             Cell cell = headerRow.createCell(i);
             cell.setCellValue(headers[i]);
@@ -1547,6 +1607,8 @@ public class OrderServiceImpl implements OrderService {
         BigDecimal sumWeight = BigDecimal.ZERO;
         BigDecimal sumTotalMeters = BigDecimal.ZERO;
         int seq = 1;
+        int dataStartRow = rowIndex; // 记录数据起始行，用于车号列合并
+        String orderVehicleNo = order.getVehicleNo() != null ? order.getVehicleNo() : "";
         for (OrderItemDO item : items) {
             // 跳过费用行
             if (item.getItemType() != null && item.getItemType() == 1) continue;
@@ -1596,9 +1658,9 @@ public class OrderServiceImpl implements OrderService {
             }
             weightCell.setCellStyle(dataCenterStyle);
 
-            // 厂家
+            // 品牌（兼容历史数据：品牌为空时回退厂家）
             Cell mfCell = dataRow.createCell(7);
-            mfCell.setCellValue(item.getManufacturer() != null ? item.getManufacturer() : "");
+            mfCell.setCellValue(resolveBrandForPrint(item));
             mfCell.setCellStyle(dataCenterStyle);
 
             // 卸货位置（使用备注字段）
@@ -1614,9 +1676,8 @@ public class OrderServiceImpl implements OrderService {
             }
             tmCell.setCellStyle(dataCenterStyle);
 
-            // 车号
+            // 车号（合并列，先创建空单元格）
             Cell vnCell = dataRow.createCell(10);
-            vnCell.setCellValue(item.getVehicleNo() != null ? item.getVehicleNo() : "");
             vnCell.setCellStyle(dataCenterStyle);
         }
 
@@ -1650,41 +1711,60 @@ public class OrderServiceImpl implements OrderService {
         sumMetersCell.setCellValue(sumTotalMeters.doubleValue());
         sumMetersCell.setCellStyle(totalBorderStyle);
 
-        // 车号（空）
+        // 车号（空，参与合并）
         Cell totalVnCell = totalRow.createCell(10);
         totalVnCell.setCellStyle(totalBorderStyle);
 
-        // 11. 空行
-        sheet.createRow(rowIndex++);
+        // 车号列：将数据行+合计行的K列合并为一个单元格，写入订单的车号
+        int dataEndRow = rowIndex - 1; // 合计行
+        if (dataEndRow > dataStartRow) {
+            sheet.addMergedRegion(new CellRangeAddress(dataStartRow, dataEndRow, 10, 10));
+        }
+        // 在合并区域的第一个单元格写入车号
+        sheet.getRow(dataStartRow).getCell(10).setCellValue(orderVehicleNo);
 
-        // 12. 签收意见
-        Row opinionRow = sheet.createRow(rowIndex++);
-        opinionRow.setHeightInPoints(20f);
-        Cell opinionCell = opinionRow.createCell(0);
-        opinionCell.setCellValue("签收意见：");
-        opinionCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
+        // 11. 底部签收区域（带外框，与模板一致）
+        int bottomStartRow = rowIndex;
 
-        // 13. 签收签字 + 签收日期
+        // 签收意见（含完整说明文字）
+        createFullMergedRow(sheet, rowIndex++, 20f,
+            "签收意见：（若无特殊说明，则认为规格、材质、数量、重量无误。如有异议，请于签收时注明）",
+            termStyle, 10);
+
+        // 空行（签收区域留白）
+        createFullMergedRow(sheet, rowIndex++, 24f, "", termStyle, 10);
+
+        // 签收签字（左半空白 + 右半显示）
         Row signRow = sheet.createRow(rowIndex++);
-        signRow.setHeightInPoints(20f);
-        Cell signCell = signRow.createCell(0);
-        signCell.setCellValue("签收签字：");
-        signCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 5));
+        signRow.setHeightInPoints(22f);
+        for (int i = 0; i <= 10; i++) {
+            signRow.createCell(i).setCellStyle(termStyle);
+        }
+        signRow.getCell(7).setCellValue("签收签字：");
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 6));
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 7, 10));
 
-        Cell signDateCell = signRow.createCell(6);
-        signDateCell.setCellValue("签收日期：");
-        signDateCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 6, 10));
+        // 签收日期（左半空白 + 右半显示）
+        Row dateRow = sheet.createRow(rowIndex++);
+        dateRow.setHeightInPoints(22f);
+        for (int i = 0; i <= 10; i++) {
+            dateRow.createCell(i).setCellStyle(termStyle);
+        }
+        dateRow.getCell(7).setCellValue("签收日期：");
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 6));
+        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 7, 10));
 
-        // 14. 温馨提示
-        Row tipRow = sheet.createRow(rowIndex++);
-        tipRow.setHeightInPoints(16f);
-        Cell tipCell = tipRow.createCell(0);
-        tipCell.setCellValue("温馨提示：请当面验收货物，如有问题请及时联系，签收后视为验收合格。");
-        tipCell.setCellStyle(normalStyleLeft);
-        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, 10));
+        // 温馨提示
+        createFullMergedRow(sheet, rowIndex++, 18f,
+            "温馨提示：此单经收货方签收确认后生效。",
+            termStyle, 10);
+
+        // 给整个底部区域加外框
+        CellRangeAddress bottomRegion = new CellRangeAddress(bottomStartRow, rowIndex - 1, 0, 10);
+        RegionUtil.setBorderTop(BorderStyle.THIN, bottomRegion, sheet);
+        RegionUtil.setBorderBottom(BorderStyle.THIN, bottomRegion, sheet);
+        RegionUtil.setBorderLeft(BorderStyle.THIN, bottomRegion, sheet);
+        RegionUtil.setBorderRight(BorderStyle.THIN, bottomRegion, sheet);
 
         // 15. 设置响应头并输出
         String dateStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
@@ -1696,6 +1776,19 @@ public class OrderServiceImpl implements OrderService {
 
         workbook.write(response.getOutputStream());
         workbook.close();
+    }
+
+    private String resolveBrandForPrint(OrderItemDO item) {
+        if (item == null) {
+            return "";
+        }
+        if (item.getBrand() != null && !item.getBrand().trim().isEmpty()) {
+            return item.getBrand();
+        }
+        if (item.getManufacturer() != null && !item.getManufacturer().trim().isEmpty()) {
+            return item.getManufacturer();
+        }
+        return "";
     }
 
     /**
@@ -1805,6 +1898,41 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
+     * 创建合并行样式（左对齐、自动换行、白色填充、无边框）
+     */
+    private CellStyle createMergedRowBorderStyle(Workbook workbook, int fontSize) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setFontName("宋体");
+        font.setFontHeightInPoints((short) fontSize);
+        font.setBold(false);
+        style.setFont(font);
+        style.setAlignment(HorizontalAlignment.LEFT);
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        style.setWrapText(true);
+        // 白色背景填充，遮住网格线
+        style.setFillForegroundColor(IndexedColors.WHITE.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        return style;
+    }
+
+    /**
+     * 创建整行合并单元格（无边框，仅白色填充隐藏网格线）
+     */
+    private void createFullMergedRow(Sheet sheet, int rowIdx, float heightInPoints,
+                                      String text, CellStyle style, int lastCol) {
+        Row row = sheet.createRow(rowIdx);
+        row.setHeightInPoints(heightInPoints);
+        for (int i = 0; i <= lastCol; i++) {
+            Cell cell = row.createCell(i);
+            cell.setCellStyle(style);
+        }
+        row.getCell(0).setCellValue(text);
+        CellRangeAddress region = new CellRangeAddress(rowIdx, rowIdx, 0, lastCol);
+        sheet.addMergedRegion(region);
+    }
+
+    /**
      * 创建右对齐文本样式
      */
     private CellStyle createTextStyleRight(Workbook workbook, int fontSize) {
@@ -1900,7 +2028,7 @@ public class OrderServiceImpl implements OrderService {
 
         // --- Sheet 6: 付款明细 ---
         buildPaymentDetailSheet(wb, headerStyle, dataStyle, moneyStyle,
-                payments, supplierMap, companyName);
+                payments, paymentPlans, supplierMap, companyName);
 
         // --- Sheet 7: 应付账款 ---
         buildPayableSheet(wb, headerStyle, dataStyle, moneyStyle, redHeaderStyle,
@@ -2006,8 +2134,8 @@ public class OrderServiceImpl implements OrderService {
 
         // 按采购单ID汇总进项发票信息（direction=0为进项）
         Map<Long, List<VoucherDO>> poVoucherMap = vouchers.stream()
-                .filter(v -> v.getDirection() != null && v.getDirection() == 0 && v.getPurchaseOrderId() != null)
-                .collect(Collectors.groupingBy(VoucherDO::getPurchaseOrderId));
+                .filter(v -> v.getDirection() != null && v.getDirection() == 0 && v.getOrderId() != null)
+                .collect(Collectors.groupingBy(VoucherDO::getOrderId));
 
         int rowIdx = 1;
         if (CollUtil.isNotEmpty(poItems)) {
@@ -2028,8 +2156,8 @@ public class OrderServiceImpl implements OrderService {
                 setCellVal(r, 7, sup != null ? sup.getName() : "", ds);
                 setCellVal(r, 8, sup != null ? sup.getAddress() : "", ds);
                 setCellVal(r, 9, sup != null ? sup.getMobile() : "", ds);
-                // 开票情况：根据采购单是否有进项发票
-                String invoiceInfo = getInvoiceInfo(poVoucherMap, pi.getPurchaseOrderId());
+                // 开票情况：根据订单是否有进项发票
+                String invoiceInfo = getInvoiceInfo(poVoucherMap, order.getId());
                 setCellVal(r, 10, invoiceInfo, ds);
                 setCellVal(r, 11, po != null ? po.getRemark() : "", ds);
             }
@@ -2056,14 +2184,14 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
-    private String getInvoiceInfo(Map<Long, List<VoucherDO>> poVoucherMap, Long purchaseOrderId) {
-        if (purchaseOrderId == null) return "";
-        List<VoucherDO> vList = poVoucherMap.get(purchaseOrderId);
+    private String getInvoiceInfo(Map<Long, List<VoucherDO>> poVoucherMap, Long orderId) {
+        if (orderId == null) return "";
+        List<VoucherDO> vList = poVoucherMap.get(orderId);
         if (CollUtil.isEmpty(vList)) return "";
         StringBuilder sb = new StringBuilder("已开票");
         for (VoucherDO v : vList) {
-            if (v.getInvoiceNo() != null && !v.getInvoiceNo().isEmpty()) {
-                sb.append(" ").append(v.getInvoiceNo());
+            if (v.getInvoiceCode() != null && !v.getInvoiceCode().isEmpty()) {
+                sb.append(" ").append(v.getInvoiceCode());
             }
         }
         return sb.toString();
@@ -2086,8 +2214,8 @@ public class OrderServiceImpl implements OrderService {
         if (CollUtil.isNotEmpty(outgoingVouchers)) {
             StringBuilder sb = new StringBuilder("已开票");
             for (VoucherDO v : outgoingVouchers) {
-                if (v.getInvoiceNo() != null && !v.getInvoiceNo().isEmpty()) {
-                    sb.append(" ").append(v.getInvoiceNo());
+                if (v.getInvoiceCode() != null && !v.getInvoiceCode().isEmpty()) {
+                    sb.append(" ").append(v.getInvoiceCode());
                 }
             }
             invoiceStatus = sb.toString();
@@ -2110,8 +2238,8 @@ public class OrderServiceImpl implements OrderService {
     }
 
     private void buildPaymentDetailSheet(Workbook wb, CellStyle hs, CellStyle ds, CellStyle ms,
-                                         List<PaymentDO> payments, Map<Long, SupplierDO> supplierMap,
-                                         String companyName) {
+                                         List<PaymentDO> payments, List<PaymentPlanDO> paymentPlans,
+                                         Map<Long, SupplierDO> supplierMap, String companyName) {
         Sheet s = wb.createSheet("付款明细");
         s.setColumnWidth(0, (int)(21 * 256));
         s.setColumnWidth(1, (int)(31 * 256));
@@ -2125,16 +2253,36 @@ public class OrderServiceImpl implements OrderService {
         for (int i = 0; i < headers.length; i++) setCellVal(h, i, headers[i], hs);
 
         int rowIdx = 1;
-        for (PaymentDO p : payments) {
+        if (CollUtil.isNotEmpty(payments)) {
+            for (PaymentDO p : payments) {
+                Row r = s.createRow(rowIdx++);
+                String dateStr = p.getPaymentDate() != null
+                        ? p.getPaymentDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+                setCellVal(r, 0, dateStr, ds);
+                SupplierDO sup = p.getSupplierId() != null ? supplierMap.get(p.getSupplierId()) : null;
+                setCellVal(r, 1, sup != null ? sup.getName() : "", ds);
+                setCellVal(r, 2, sup != null ? sup.getAddress() : "", ds);
+                setCellVal(r, 3, sup != null ? sup.getMobile() : "", ds);
+                setCellNum(r, 4, p.getAmount(), ms);
+                setCellVal(r, 5, companyName, ds);
+                setCellVal(r, 6, "", ds);
+            }
+            return;
+        }
+
+        for (PaymentPlanDO p : paymentPlans) {
+            if (!Integer.valueOf(0).equals(p.getType())) {
+                continue;
+            }
             Row r = s.createRow(rowIdx++);
-            String dateStr = p.getPaymentDate() != null
-                    ? p.getPaymentDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
+            String dateStr = p.getPlanDate() != null
+                    ? p.getPlanDate().format(DateTimeFormatter.ofPattern("yyyy.M.d")) : "";
             setCellVal(r, 0, dateStr, ds);
             SupplierDO sup = p.getSupplierId() != null ? supplierMap.get(p.getSupplierId()) : null;
             setCellVal(r, 1, sup != null ? sup.getName() : "", ds);
             setCellVal(r, 2, sup != null ? sup.getAddress() : "", ds);
             setCellVal(r, 3, sup != null ? sup.getMobile() : "", ds);
-            setCellNum(r, 4, p.getAmount(), ms);
+            setCellNum(r, 4, p.getPlanAmount(), ms);
             setCellVal(r, 5, companyName, ds);
             setCellVal(r, 6, "", ds);
         }
@@ -2308,7 +2456,7 @@ public class OrderServiceImpl implements OrderService {
         setCellNum(dRow, 3, order.getTotalPurchaseAmount(), ms);
         setCellVal(dRow, 4, "", ds); // 吨位 - 留空
         setCellVal(dRow, 5, "", ds); // 加价 - 留空
-        setCellVal(dRow, 6, "", ds); // 总金额 - 留空
+        setCellNum(dRow, 6, order.getTotalNetProfit(), ms);
         setCellVal(dRow, 7, order.getRemark(), ds);
 
         // Row 4: 合计
@@ -2320,7 +2468,7 @@ public class OrderServiceImpl implements OrderService {
         setCellNum(tRow, 3, order.getTotalPurchaseAmount(), ms);
         setCellVal(tRow, 4, "", hs);
         setCellVal(tRow, 5, "", hs);
-        setCellVal(tRow, 6, "", hs);
+        setCellNum(tRow, 6, order.getTotalNetProfit(), ms);
         setCellVal(tRow, 7, "", hs);
     }
 
@@ -2624,14 +2772,7 @@ public class OrderServiceImpl implements OrderService {
             throw exception(ORDER_STATUS_NOT_ALLOW_UPDATE); // 复用异常：已有付款记录不可清空
         }
 
-        // 1. 删除关联通知
-        List<Long> planIds = paymentPlanMapper.selectListByOrderId(id).stream()
-                .map(PaymentPlanDO::getId).collect(Collectors.toList());
-        if (!planIds.isEmpty()) {
-            paymentPlanService.deleteNotificationsByPlanIds(planIds);
-        }
-
-        // 2. 删除付款计划
+        // 1. 删除付款计划（通知机制已停用，无需再删通知）
         paymentPlanMapper.deleteByOrderId(id);
 
         // 3. 删除采购单明细 & 采购单
