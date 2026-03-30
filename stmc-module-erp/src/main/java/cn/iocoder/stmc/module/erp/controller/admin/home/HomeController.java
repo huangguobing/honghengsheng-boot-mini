@@ -101,8 +101,8 @@ public class HomeController {
         boolean isRoleB = permissionApi.hasAnyRoles(userId, ROLE_B);
         Integer orderCategory = isRoleB ? 1 : 0;
 
-        // 订单数：管理员看全部，业务员只看自己的
-        Long salesmanId = isAdmin ? null : userId;
+        // 首页统计口径：A/管理员按原规则，B角色查看全部副订单
+        Long salesmanId = (isAdmin || isRoleB) ? null : userId;
         respVO.setOrderCount(orderMapper.selectCountBySalesman(salesmanId, orderCategory));
 
         // ========== 待处理事项统计（仅管理员可见） ==========
