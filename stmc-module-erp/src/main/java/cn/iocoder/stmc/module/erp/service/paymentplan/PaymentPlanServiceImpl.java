@@ -163,6 +163,9 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         if (plan == null) {
             throw exception(PAYMENT_PLAN_NOT_EXISTS);
         }
+        if (plan.getPlanAmount() == null || plan.getPlanAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw exception(PAYMENT_PLAN_NEGATIVE_ONLY_FOR_RECEIVABLE);
+        }
         if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
             throw exception(PAYMENT_PLAN_ALREADY_PAID);
         }
@@ -326,14 +329,16 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     @Transactional(rollbackFor = Exception.class)
     public Long createPaymentPlan(PaymentPlanSaveReqVO reqVO) {
         validatePaymentPlanTarget(reqVO);
-        validatePaymentPlanAmount(reqVO.getPlanAmount());
+        validatePaymentPlanAmount(reqVO);
 
         OrderDO order = lockOrder(reqVO.getOrderId());
         BigDecimal paidAmount = reqVO.getPaidAmount() != null ? reqVO.getPaidAmount() : BigDecimal.ZERO;
         if (paidAmount.compareTo(BigDecimal.ZERO) < 0) {
             throw exception(PAYMENT_PLAN_PARTIAL_PAY_INVALID);
         }
-        if (paidAmount.compareTo(reqVO.getPlanAmount()) > 0) {
+        if (reqVO.getPlanAmount().compareTo(BigDecimal.ZERO) < 0) {
+            paidAmount = BigDecimal.ZERO;
+        } else if (paidAmount.compareTo(reqVO.getPlanAmount()) > 0) {
             throw exception(PAYMENT_PLAN_PAID_AMOUNT_EXCEEDS_PLAN);
         }
 
@@ -355,7 +360,12 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         plan.setStage(1);
 
         LocalDateTime now = LocalDateTime.now();
-        if (paidAmount.compareTo(reqVO.getPlanAmount()) >= 0 || PaymentPlanStatusEnum.PAID.getStatus().equals(reqVO.getStatus())) {
+        if (reqVO.getPlanAmount().compareTo(BigDecimal.ZERO) < 0) {
+            plan.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
+            plan.setActualAmount(BigDecimal.ZERO);
+            plan.setPaidAmount(BigDecimal.ZERO);
+            plan.setActualDate(null);
+        } else if (paidAmount.compareTo(reqVO.getPlanAmount()) >= 0 || PaymentPlanStatusEnum.PAID.getStatus().equals(reqVO.getStatus())) {
             plan.setStatus(PaymentPlanStatusEnum.PAID.getStatus());
             plan.setActualAmount(paidAmount.compareTo(BigDecimal.ZERO) > 0 ? paidAmount : reqVO.getPlanAmount());
             plan.setPaidAmount(plan.getActualAmount());
@@ -404,11 +414,12 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
                 throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_EDIT);
             }
         } else {
-            validatePaymentPlanAmount(reqVO.getPlanAmount());
+            validatePaymentPlanAmount(reqVO);
             validatePlanCap(reqVO, plan, reqVO.getPlanAmount());
         }
 
-        if (reqVO.getPlanAmount() != null && plan.getPaidAmount() != null
+        if (reqVO.getPlanAmount() != null && reqVO.getPlanAmount().compareTo(BigDecimal.ZERO) > 0
+                && plan.getPaidAmount() != null
                 && reqVO.getPlanAmount().compareTo(plan.getPaidAmount()) < 0) {
             throw exception(PAYMENT_PLAN_AMOUNT_BELOW_PAID);
         }
@@ -461,6 +472,9 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         PaymentPlanDO plan = paymentPlanMapper.selectById(id);
         if (plan == null) {
             throw exception(PAYMENT_PLAN_NOT_EXISTS);
+        }
+        if (plan.getPlanAmount() == null || plan.getPlanAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw exception(PAYMENT_PLAN_NEGATIVE_ONLY_FOR_RECEIVABLE);
         }
         if (PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus())) {
             throw exception(PAYMENT_PLAN_ALREADY_PAID);
@@ -607,9 +621,13 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
         }
     }
 
-    private void validatePaymentPlanAmount(BigDecimal amount) {
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+    private void validatePaymentPlanAmount(PaymentPlanSaveReqVO reqVO) {
+        BigDecimal amount = reqVO.getPlanAmount();
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) == 0) {
             throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+        }
+        if (amount.compareTo(BigDecimal.ZERO) < 0 && !Integer.valueOf(1).equals(reqVO.getType())) {
+            throw exception(PAYMENT_PLAN_NEGATIVE_ONLY_FOR_RECEIVABLE);
         }
     }
 
@@ -656,6 +674,16 @@ public class PaymentPlanServiceImpl implements PaymentPlanService {
     }
 
     private void validatePlanCap(PaymentPlanSaveReqVO reqVO, PaymentPlanDO existingPlan, BigDecimal targetAmount) {
+        if (targetAmount == null) {
+            throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+        }
+        if (targetAmount.compareTo(BigDecimal.ZERO) < 0) {
+            if (!Integer.valueOf(1).equals(reqVO.getType())) {
+                throw exception(PAYMENT_PLAN_NEGATIVE_ONLY_FOR_RECEIVABLE);
+            }
+            return;
+        }
+
         OrderDO order = orderService.getOrder(reqVO.getOrderId());
         if (order == null) {
             throw exception(ORDER_NOT_EXISTS);

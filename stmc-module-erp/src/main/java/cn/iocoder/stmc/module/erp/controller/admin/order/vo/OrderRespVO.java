@@ -147,7 +147,7 @@ public class OrderRespVO {
     @Schema(description = "是否退货单: 0=否 1=是", example = "0")
     private Integer isReturn;
 
-    @Schema(description = "副订单状态: 0=无副订单 1=已有副订单", example = "0")
+    @Schema(description = "副订单状态: 0=待录入 1=已有副订单 2=闭环不再推送", example = "0")
     private Integer subOrderStatus;
 
     @Schema(description = "商品明细列表")

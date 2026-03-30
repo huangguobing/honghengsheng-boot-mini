@@ -84,9 +84,14 @@ public interface OrderItemMapper extends BaseMapperX<OrderItemDO> {
             "  COALESCE(SUM(oi.weight), 0) as totalWeight, " +
             "  COUNT(*) as orderItemCount " +
             "FROM erp_order_item oi " +
+            "INNER JOIN erp_order o ON oi.order_id = o.id " +
             "LEFT JOIN erp_supplier s ON oi.supplier_id = s.id " +
             "WHERE oi.supplier_id IS NOT NULL " +
             "  AND oi.deleted = 0 " +
+            "  AND o.deleted = 0 " +
+            "  <if test='orderCategory == 0'> AND o.parent_order_id IS NULL </if>" +
+            "  <if test='orderCategory == 1'> AND o.parent_order_id IS NOT NULL </if>" +
+            "  AND o.order_category = #{orderCategory} " +
             "  <if test='startTime != null'>" +
             "    AND oi.create_time &gt;= #{startTime} " +
             "  </if>" +
@@ -102,6 +107,7 @@ public interface OrderItemMapper extends BaseMapperX<OrderItemDO> {
     List<SupplierStatisticsRespVO> selectSupplierPurchaseStatistics(
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime,
-            @Param("supplierName") String supplierName);
+            @Param("supplierName") String supplierName,
+            @Param("orderCategory") Integer orderCategory);
 
 }

@@ -229,7 +229,7 @@ public class OrderDO extends BaseDO {
     private Integer orderCategory;
 
     /**
-     * 副单录入状态：0=待录入 1=已录入（仅主订单使用）
+     * 副单录入状态：0=待录入 1=已录入 2=闭环不再推送（仅主订单使用）
      */
     private Integer subOrderStatus;
 

@@ -337,6 +337,14 @@ public class OrderController {
         return success(true);
     }
 
+    @PutMapping("/adjust")
+    @Operation(summary = "订单退换货闭环调整")
+    @PreAuthorize("@ss.hasPermission('erp:order:update')")
+    public CommonResult<Boolean> adjustOrder(@Valid @RequestBody OrderAdjustReqVO reqVO) {
+        orderService.adjustOrder(reqVO);
+        return success(true);
+    }
+
     // ========== 结算相关接口 ==========
 
     @PutMapping("/enter-settlement")

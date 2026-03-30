@@ -6,7 +6,9 @@ import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
 import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
+import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderAdjustReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderCostFillReqVO;
+import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSaveReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderItemSaveReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderSaveReqVO;
@@ -33,6 +35,7 @@ import cn.iocoder.stmc.module.erp.service.payment.PaymentService;
 import cn.iocoder.stmc.module.erp.service.paymentplan.PaymentPlanService;
 import cn.iocoder.stmc.module.erp.service.project.ProjectService;
 import cn.iocoder.stmc.module.erp.service.supplier.SupplierService;
+import cn.iocoder.stmc.module.erp.service.voucher.VoucherService;
 import cn.iocoder.stmc.module.erp.util.MoneyUtils;
 import cn.iocoder.stmc.module.system.api.user.AdminUserApi;
 import cn.iocoder.stmc.module.system.api.user.dto.AdminUserRespDTO;
@@ -131,6 +134,10 @@ public class OrderServiceImpl implements OrderService {
 
     @Resource
     private cn.iocoder.stmc.module.erp.dal.mysql.voucher.VoucherMapper voucherMapper;
+
+    @Resource
+    @Lazy
+    private VoucherService voucherService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -930,6 +937,597 @@ public class OrderServiceImpl implements OrderService {
                 "edit_items_simple", null, null,
                 "编辑商品明细（简单模式），商品数：" + editReqVO.getItems().size()
                         + "，销售总额：" + totalAmount);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void adjustOrder(OrderAdjustReqVO reqVO) {
+        OrderDO order = validateOrderExists(reqVO.getOrderId());
+        if (!OrderStatusEnum.CONFIRMED.getStatus().equals(order.getStatus())
+                && !OrderStatusEnum.COMPLETED.getStatus().equals(order.getStatus())
+                && !OrderStatusEnum.SETTLING.getStatus().equals(order.getStatus())) {
+            throw exception(ORDER_STATUS_NOT_ALLOW_ADJUST);
+        }
+        if (!Boolean.TRUE.equals(order.getCostFilled())) {
+            throw exception(ORDER_COST_NOT_FILLED);
+        }
+        if (CollUtil.isEmpty(reqVO.getItems())) {
+            throw exception(ORDER_ITEMS_CANNOT_BE_EMPTY);
+        }
+
+        List<PurchaseOrderDO> existingPurchaseOrders = purchaseOrderMapper.selectListByOrderId(order.getId());
+        Map<Long, PurchaseOrderDO> existingPurchaseOrderMap = existingPurchaseOrders.stream()
+                .collect(Collectors.toMap(PurchaseOrderDO::getId, po -> po, (a, b) -> a));
+        List<OrderAdjustReqVO.PurchaseOrder> requestedPurchaseOrders =
+                reqVO.getPurchaseOrders() != null ? reqVO.getPurchaseOrders() : Collections.emptyList();
+        validateAdjustPurchaseStructure(requestedPurchaseOrders, existingPurchaseOrderMap);
+
+        Map<String, OrderAdjustReqVO.Item> requestedItemMap = buildRequestedItemMap(reqVO.getItems());
+        Map<String, AdjustPurchaseAllocation> purchaseAllocationMap =
+                buildAdjustPurchaseAllocationMap(requestedPurchaseOrders, existingPurchaseOrderMap, requestedItemMap);
+        validateAdjustedProductAssignments(reqVO.getItems(), purchaseAllocationMap);
+
+        Map<String, OrderItemDO> newOrderItemMap = rewriteAdjustedOrderItems(order, reqVO, purchaseAllocationMap);
+        replaceAdjustedPurchaseOrderItems(requestedPurchaseOrders, newOrderItemMap);
+        processAdjustedPayablePlans(order, reqVO, existingPurchaseOrderMap);
+        processAdjustedReceivablePlans(order, reqVO);
+        upsertAdjustedExpenses(order.getId(), reqVO.getExpenses());
+        reconcileSubOrderAfterAdjust(order.getId());
+        refreshOrderStatusAfterAdjust(order.getId());
+
+        operationLogService.log("order", order.getId(), order.getOrderNo(),
+                "adjust_closed_loop", null, null,
+                "退换货调整闭环提交，商品数：" + reqVO.getItems().size()
+                        + "，采购单数：" + requestedPurchaseOrders.size());
+    }
+
+    private Map<String, OrderAdjustReqVO.Item> buildRequestedItemMap(List<OrderAdjustReqVO.Item> items) {
+        Map<String, OrderAdjustReqVO.Item> result = new LinkedHashMap<>();
+        for (OrderAdjustReqVO.Item item : items) {
+            if (result.putIfAbsent(item.getClientKey(), item) != null) {
+                throw exception(ORDER_ADJUST_ITEM_PURCHASE_MULTI_ASSIGNED);
+            }
+        }
+        return result;
+    }
+
+    private void validateAdjustPurchaseStructure(List<OrderAdjustReqVO.PurchaseOrder> requestedPurchaseOrders,
+                                                 Map<Long, PurchaseOrderDO> existingPurchaseOrderMap) {
+        Set<Long> requestedIds = requestedPurchaseOrders.stream()
+                .map(OrderAdjustReqVO.PurchaseOrder::getId)
+                .collect(Collectors.toSet());
+        Set<Long> existingIds = existingPurchaseOrderMap.keySet();
+        if (!requestedIds.equals(existingIds)) {
+            throw exception(ORDER_ADJUST_PURCHASE_STRUCTURE_INVALID);
+        }
+        for (OrderAdjustReqVO.PurchaseOrder purchaseOrder : requestedPurchaseOrders) {
+            PurchaseOrderDO existing = existingPurchaseOrderMap.get(purchaseOrder.getId());
+            if (existing == null) {
+                throw exception(ORDER_ADJUST_PURCHASE_STRUCTURE_INVALID);
+            }
+            if (!Objects.equals(existing.getSupplierId(), purchaseOrder.getSupplierId())) {
+                throw exception(ORDER_ADJUST_SUPPLIER_CHANGED);
+            }
+        }
+    }
+
+    private Map<String, AdjustPurchaseAllocation> buildAdjustPurchaseAllocationMap(
+            List<OrderAdjustReqVO.PurchaseOrder> requestedPurchaseOrders,
+            Map<Long, PurchaseOrderDO> existingPurchaseOrderMap,
+            Map<String, OrderAdjustReqVO.Item> requestedItemMap) {
+        Map<String, AdjustPurchaseAllocation> result = new HashMap<>();
+        for (OrderAdjustReqVO.PurchaseOrder purchaseOrder : requestedPurchaseOrders) {
+            PurchaseOrderDO existing = existingPurchaseOrderMap.get(purchaseOrder.getId());
+            if (existing == null) {
+                throw exception(ORDER_ADJUST_PURCHASE_STRUCTURE_INVALID);
+            }
+            List<OrderAdjustReqVO.PurchaseItem> items =
+                    purchaseOrder.getItems() != null ? purchaseOrder.getItems() : Collections.emptyList();
+            for (OrderAdjustReqVO.PurchaseItem item : items) {
+                if (!requestedItemMap.containsKey(item.getOrderItemClientKey())) {
+                    throw exception(ORDER_ADJUST_ITEM_PURCHASE_UNASSIGNED);
+                }
+                if (result.containsKey(item.getOrderItemClientKey())) {
+                    throw exception(ORDER_ADJUST_ITEM_PURCHASE_MULTI_ASSIGNED);
+                }
+                AdjustPurchaseAllocation allocation = new AdjustPurchaseAllocation();
+                allocation.purchaseOrderId = purchaseOrder.getId();
+                allocation.supplierId = purchaseOrder.getSupplierId();
+                allocation.purchaseUnit = item.getUnit();
+                allocation.purchaseQuantity = defaultBigDecimal(item.getQuantity());
+                allocation.weight = defaultBigDecimal(item.getWeight());
+                allocation.purchasePrice = defaultBigDecimal(item.getPurchasePrice());
+                allocation.purchaseAmount = defaultBigDecimal(item.getPurchaseAmount());
+                result.put(item.getOrderItemClientKey(), allocation);
+            }
+        }
+        return result;
+    }
+
+    private void validateAdjustedProductAssignments(List<OrderAdjustReqVO.Item> items,
+                                                   Map<String, AdjustPurchaseAllocation> purchaseAllocationMap) {
+        for (OrderAdjustReqVO.Item item : items) {
+            if (Integer.valueOf(0).equals(item.getItemType()) && !purchaseAllocationMap.containsKey(item.getClientKey())) {
+                throw exception(ORDER_ADJUST_ITEM_PURCHASE_UNASSIGNED);
+            }
+        }
+    }
+
+    private Map<String, OrderItemDO> rewriteAdjustedOrderItems(OrderDO order,
+                                                               OrderAdjustReqVO reqVO,
+                                                               Map<String, AdjustPurchaseAllocation> purchaseAllocationMap) {
+        orderItemMapper.deleteByOrderId(order.getId());
+
+        BigDecimal totalQuantity = BigDecimal.ZERO;
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        BigDecimal totalPurchaseAmount = BigDecimal.ZERO;
+        BigDecimal totalGrossProfit = BigDecimal.ZERO;
+        BigDecimal totalTaxAmount = BigDecimal.ZERO;
+        BigDecimal totalNetProfit = BigDecimal.ZERO;
+        Map<String, OrderItemDO> result = new LinkedHashMap<>();
+
+        for (OrderAdjustReqVO.Item reqItem : reqVO.getItems()) {
+            OrderItemDO item = new OrderItemDO();
+            item.setOrderId(order.getId());
+            item.setItemType(reqItem.getItemType());
+            item.setProductName(reqItem.getProductName());
+            item.setSpec(reqItem.getSpec());
+            item.setSaleUnit(reqItem.getSaleUnit());
+            item.setSaleQuantity(defaultBigDecimal(reqItem.getSaleQuantity()));
+            item.setSalePrice(defaultBigDecimal(reqItem.getSalePrice()));
+            item.setSaleRemark(reqItem.getSaleRemark());
+            item.setMaterial(reqItem.getMaterial());
+            item.setBrand(reqItem.getBrand());
+            item.setManufacturer(reqItem.getManufacturer());
+            item.setWeight(reqItem.getWeight());
+            item.setLength(reqItem.getLength());
+            item.setTotalMeters(reqItem.getTotalMeters());
+
+            BigDecimal saleAmount = reqItem.getSaleAmount();
+            if (saleAmount == null || saleAmount.compareTo(BigDecimal.ZERO) == 0) {
+                BigDecimal weight = defaultBigDecimal(reqItem.getWeight());
+                saleAmount = weight.multiply(defaultBigDecimal(reqItem.getSalePrice()));
+            }
+            item.setSaleAmount(saleAmount);
+
+            AdjustPurchaseAllocation allocation = purchaseAllocationMap.get(reqItem.getClientKey());
+            if (Integer.valueOf(0).equals(reqItem.getItemType()) && allocation == null) {
+                throw exception(ORDER_ADJUST_ITEM_PURCHASE_UNASSIGNED);
+            }
+
+            BigDecimal purchaseAmount = BigDecimal.ZERO;
+            if (allocation != null) {
+                item.setPurchaseUnit(allocation.purchaseUnit);
+                item.setPurchaseQuantity(allocation.purchaseQuantity);
+                item.setPurchasePrice(allocation.purchasePrice);
+                item.setPurchaseAmount(allocation.purchaseAmount);
+                item.setSupplierId(allocation.supplierId);
+                purchaseAmount = allocation.purchaseAmount;
+            } else {
+                item.setPurchaseAmount(BigDecimal.ZERO);
+            }
+
+            BigDecimal taxAmount = defaultBigDecimal(reqItem.getTaxAmount());
+            item.setTaxAmount(taxAmount);
+
+            BigDecimal grossProfit = saleAmount.subtract(purchaseAmount);
+            item.setGrossProfit(grossProfit);
+            item.setNetProfit(grossProfit.subtract(taxAmount));
+
+            orderItemMapper.insert(item);
+            result.put(reqItem.getClientKey(), item);
+
+            totalQuantity = totalQuantity.add(defaultBigDecimal(reqItem.getSaleQuantity()));
+            totalAmount = totalAmount.add(saleAmount);
+            totalPurchaseAmount = totalPurchaseAmount.add(purchaseAmount);
+            totalGrossProfit = totalGrossProfit.add(grossProfit);
+            totalTaxAmount = totalTaxAmount.add(taxAmount);
+            totalNetProfit = totalNetProfit.add(item.getNetProfit());
+        }
+
+        BigDecimal shippingFee = reqVO.getShippingFee() != null ? reqVO.getShippingFee()
+                : defaultBigDecimal(order.getShippingFee());
+        BigDecimal discountAmount = reqVO.getDiscountAmount() != null ? reqVO.getDiscountAmount()
+                : defaultBigDecimal(order.getDiscountAmount());
+        BigDecimal extraCostVal = defaultBigDecimal(order.getExtraCost());
+
+        OrderDO updateOrder = new OrderDO();
+        updateOrder.setId(order.getId());
+        updateOrder.setTotalQuantity(totalQuantity);
+        updateOrder.setTotalAmount(totalAmount);
+        updateOrder.setShippingFee(shippingFee);
+        updateOrder.setDiscountAmount(discountAmount);
+        updateOrder.setPayableAmount(totalAmount.add(shippingFee).subtract(discountAmount));
+        updateOrder.setTotalPurchaseAmount(totalPurchaseAmount);
+        updateOrder.setTotalGrossProfit(totalGrossProfit);
+        updateOrder.setTotalTaxAmount(totalTaxAmount);
+        updateOrder.setTotalNetProfit(totalNetProfit.subtract(extraCostVal));
+        orderMapper.updateById(updateOrder);
+        return result;
+    }
+
+    private void replaceAdjustedPurchaseOrderItems(List<OrderAdjustReqVO.PurchaseOrder> requestedPurchaseOrders,
+                                                   Map<String, OrderItemDO> newOrderItemMap) {
+        for (OrderAdjustReqVO.PurchaseOrder purchaseOrder : requestedPurchaseOrders) {
+            purchaseOrderItemMapper.delete(PurchaseOrderItemDO::getPurchaseOrderId, purchaseOrder.getId());
+
+            BigDecimal totalAmount = BigDecimal.ZERO;
+            List<PurchaseOrderItemDO> itemsToInsert = new ArrayList<>();
+            List<OrderAdjustReqVO.PurchaseItem> items =
+                    purchaseOrder.getItems() != null ? purchaseOrder.getItems() : Collections.emptyList();
+            for (OrderAdjustReqVO.PurchaseItem reqItem : items) {
+                OrderItemDO orderItem = newOrderItemMap.get(reqItem.getOrderItemClientKey());
+                if (orderItem == null) {
+                    throw exception(ORDER_ADJUST_ITEM_PURCHASE_UNASSIGNED);
+                }
+                PurchaseOrderItemDO item = new PurchaseOrderItemDO();
+                item.setPurchaseOrderId(purchaseOrder.getId());
+                item.setOrderItemId(orderItem.getId());
+                item.setProductName(reqItem.getProductName());
+                item.setSpecName(reqItem.getSpec());
+                item.setUnit(reqItem.getUnit());
+                item.setQuantity(defaultBigDecimal(reqItem.getQuantity()));
+                item.setWeight(reqItem.getWeight());
+                item.setPurchasePrice(defaultBigDecimal(reqItem.getPurchasePrice()));
+                item.setPurchaseAmount(defaultBigDecimal(reqItem.getPurchaseAmount()));
+                itemsToInsert.add(item);
+                totalAmount = totalAmount.add(item.getPurchaseAmount());
+            }
+            if (CollUtil.isNotEmpty(itemsToInsert)) {
+                purchaseOrderItemMapper.insertBatch(itemsToInsert);
+            }
+
+            PurchaseOrderDO update = new PurchaseOrderDO();
+            update.setId(purchaseOrder.getId());
+            update.setTotalAmount(totalAmount);
+            purchaseOrderMapper.updateById(update);
+        }
+    }
+
+    private void processAdjustedPayablePlans(OrderDO order,
+                                             OrderAdjustReqVO reqVO,
+                                             Map<Long, PurchaseOrderDO> existingPurchaseOrderMap) {
+        List<PaymentPlanDO> existingPlans = paymentPlanMapper.selectListByOrderId(order.getId()).stream()
+                .filter(plan -> Integer.valueOf(0).equals(plan.getType()))
+                .filter(plan -> !Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.CANCELLED.getStatus()))
+                .collect(Collectors.toList());
+        Map<Long, PaymentPlanDO> existingPlanMap = existingPlans.stream()
+                .collect(Collectors.toMap(PaymentPlanDO::getId, plan -> plan, (a, b) -> a));
+
+        List<OrderAdjustReqVO.Plan> requestedPlans =
+                reqVO.getPayablePlans() != null ? reqVO.getPayablePlans() : Collections.emptyList();
+        validateAdjustedPayablePlanTotals(existingPlans, requestedPlans, reqVO.getPurchaseOrders());
+
+        Map<Long, OrderAdjustReqVO.Plan> requestedPlanMap = requestedPlans.stream()
+                .filter(plan -> plan.getId() != null)
+                .collect(Collectors.toMap(OrderAdjustReqVO.Plan::getId, plan -> plan, (a, b) -> a));
+
+        for (PaymentPlanDO existingPlan : existingPlans) {
+            OrderAdjustReqVO.Plan requested = requestedPlanMap.get(existingPlan.getId());
+            if (requested == null) {
+                continue;
+            }
+            if (Boolean.TRUE.equals(requested.getDeleted())) {
+                if (isImmutablePlan(existingPlan)) {
+                    throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_DELETE);
+                }
+                paymentPlanMapper.deleteById(existingPlan.getId());
+                voucherService.deleteAutoVouchersByPlan(existingPlan);
+                continue;
+            }
+
+            PurchaseOrderDO purchaseOrder = existingPurchaseOrderMap.get(existingPlan.getPurchaseOrderId());
+            if (purchaseOrder == null) {
+                throw exception(ORDER_ADJUST_PURCHASE_STRUCTURE_INVALID);
+            }
+            if (isImmutablePlan(existingPlan)
+                    && requested.getPlanAmount() != null
+                    && requested.getPlanAmount().compareTo(defaultBigDecimal(existingPlan.getPlanAmount())) != 0) {
+                throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_EDIT);
+            }
+
+            PaymentPlanDO update = new PaymentPlanDO();
+            update.setId(existingPlan.getId());
+            update.setOrderId(order.getId());
+            update.setPurchaseOrderId(existingPlan.getPurchaseOrderId());
+            update.setSupplierId(purchaseOrder.getSupplierId());
+            update.setProjectId(order.getProjectId());
+            update.setType(0);
+            update.setPlanDate(requested.getPlanDate() != null ? requested.getPlanDate() : existingPlan.getPlanDate());
+            update.setPaymentMethod(requested.getPaymentMethod());
+            update.setRemark(requested.getRemark());
+            if (!isImmutablePlan(existingPlan)) {
+                update.setPlanAmount(defaultBigDecimal(requested.getPlanAmount()));
+            }
+            paymentPlanMapper.updateById(update);
+            PaymentPlanDO afterUpdate = paymentPlanMapper.selectById(existingPlan.getId());
+            voucherService.syncAutoVouchersFromPlan(afterUpdate);
+        }
+
+        int newStage = existingPlans.size() + 1;
+        for (OrderAdjustReqVO.Plan requested : requestedPlans) {
+            if (requested.getId() != null || Boolean.TRUE.equals(requested.getDeleted())) {
+                continue;
+            }
+            if (requested.getPlanAmount() == null || requested.getPlanAmount().compareTo(BigDecimal.ZERO) <= 0) {
+                throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+            }
+            PurchaseOrderDO purchaseOrder = existingPurchaseOrderMap.get(requested.getPurchaseOrderId());
+            if (purchaseOrder == null) {
+                throw exception(ORDER_ADJUST_PURCHASE_STRUCTURE_INVALID);
+            }
+
+            PaymentPlanDO plan = new PaymentPlanDO();
+            plan.setPlanNo(generatePlanNo());
+            plan.setType(0);
+            plan.setOrderId(order.getId());
+            plan.setPurchaseOrderId(purchaseOrder.getId());
+            plan.setSupplierId(purchaseOrder.getSupplierId());
+            plan.setProjectId(order.getProjectId());
+            plan.setPlanAmount(requested.getPlanAmount());
+            plan.setPaidAmount(BigDecimal.ZERO);
+            plan.setPaymentMethod(requested.getPaymentMethod());
+            plan.setPlanDate(requested.getPlanDate() != null ? requested.getPlanDate() : LocalDate.now());
+            plan.setRemark(requested.getRemark());
+            plan.setStage(newStage++);
+            plan.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
+            plan.setActualAmount(BigDecimal.ZERO);
+            plan.setActualDate(null);
+            paymentPlanMapper.insert(plan);
+            voucherService.createAutoVoucherFromPlan(plan);
+        }
+    }
+
+    private void validateAdjustedPayablePlanTotals(List<PaymentPlanDO> existingPlans,
+                                                   List<OrderAdjustReqVO.Plan> requestedPlans,
+                                                   List<OrderAdjustReqVO.PurchaseOrder> purchaseOrders) {
+        Map<Long, BigDecimal> purchaseTotalMap = new HashMap<>();
+        if (purchaseOrders != null) {
+            for (OrderAdjustReqVO.PurchaseOrder purchaseOrder : purchaseOrders) {
+                BigDecimal total = defaultBigDecimal(purchaseOrder.getItems() == null ? BigDecimal.ZERO
+                        : purchaseOrder.getItems().stream()
+                        .map(item -> defaultBigDecimal(item.getPurchaseAmount()))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add));
+                purchaseTotalMap.put(purchaseOrder.getId(), total);
+            }
+        }
+
+        Map<Long, OrderAdjustReqVO.Plan> requestedPlanMap = requestedPlans.stream()
+                .filter(plan -> plan.getId() != null)
+                .collect(Collectors.toMap(OrderAdjustReqVO.Plan::getId, plan -> plan, (a, b) -> a));
+        Map<Long, BigDecimal> finalTotalMap = new HashMap<>();
+
+        for (PaymentPlanDO existingPlan : existingPlans) {
+            OrderAdjustReqVO.Plan requested = requestedPlanMap.get(existingPlan.getId());
+            if (requested != null && Boolean.TRUE.equals(requested.getDeleted())) {
+                if (isImmutablePlan(existingPlan)) {
+                    throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_DELETE);
+                }
+                continue;
+            }
+            BigDecimal amount = requested != null && requested.getPlanAmount() != null
+                    ? requested.getPlanAmount()
+                    : defaultBigDecimal(existingPlan.getPlanAmount());
+            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+            }
+            finalTotalMap.merge(existingPlan.getPurchaseOrderId(), amount, BigDecimal::add);
+        }
+
+        for (OrderAdjustReqVO.Plan requested : requestedPlans) {
+            if (requested.getId() != null || Boolean.TRUE.equals(requested.getDeleted())) {
+                continue;
+            }
+            if (requested.getPlanAmount() == null || requested.getPlanAmount().compareTo(BigDecimal.ZERO) <= 0) {
+                throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+            }
+            finalTotalMap.merge(requested.getPurchaseOrderId(), requested.getPlanAmount(), BigDecimal::add);
+        }
+
+        for (Map.Entry<Long, BigDecimal> entry : finalTotalMap.entrySet()) {
+            BigDecimal purchaseTotal = purchaseTotalMap.getOrDefault(entry.getKey(), BigDecimal.ZERO);
+            if (entry.getValue().compareTo(purchaseTotal) > 0) {
+                throw exception(PAYMENT_PLAN_CAP_EXCEEDED);
+            }
+        }
+    }
+
+    private void processAdjustedReceivablePlans(OrderDO order, OrderAdjustReqVO reqVO) {
+        List<PaymentPlanDO> existingPlans = paymentPlanMapper.selectListByOrderId(order.getId()).stream()
+                .filter(plan -> Integer.valueOf(1).equals(plan.getType()))
+                .filter(plan -> !Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.CANCELLED.getStatus()))
+                .collect(Collectors.toList());
+        Map<Long, OrderAdjustReqVO.Plan> requestedPlanMap = (reqVO.getReceivablePlans() != null
+                ? reqVO.getReceivablePlans() : Collections.<OrderAdjustReqVO.Plan>emptyList()).stream()
+                .filter(plan -> plan.getId() != null)
+                .collect(Collectors.toMap(OrderAdjustReqVO.Plan::getId, plan -> plan, (a, b) -> a));
+
+        for (PaymentPlanDO existingPlan : existingPlans) {
+            OrderAdjustReqVO.Plan requested = requestedPlanMap.get(existingPlan.getId());
+            if (requested == null) {
+                continue;
+            }
+            if (Boolean.TRUE.equals(requested.getDeleted())) {
+                if (isImmutablePlan(existingPlan)) {
+                    throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_DELETE);
+                }
+                paymentPlanMapper.deleteById(existingPlan.getId());
+                voucherService.deleteAutoVouchersByPlan(existingPlan);
+                continue;
+            }
+
+            BigDecimal targetAmount = requested.getPlanAmount() != null
+                    ? requested.getPlanAmount()
+                    : defaultBigDecimal(existingPlan.getPlanAmount());
+            if (targetAmount.compareTo(BigDecimal.ZERO) == 0) {
+                throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+            }
+            if (isImmutablePlan(existingPlan)
+                    && targetAmount.compareTo(defaultBigDecimal(existingPlan.getPlanAmount())) != 0) {
+                throw exception(PAYMENT_PLAN_STATUS_NOT_ALLOW_EDIT);
+            }
+
+            PaymentPlanDO update = new PaymentPlanDO();
+            update.setId(existingPlan.getId());
+            update.setPlanDate(requested.getPlanDate() != null ? requested.getPlanDate() : existingPlan.getPlanDate());
+            update.setPaymentMethod(requested.getPaymentMethod());
+            update.setRemark(requested.getRemark());
+            if (!isImmutablePlan(existingPlan)) {
+                update.setPlanAmount(targetAmount);
+            }
+            paymentPlanMapper.updateById(update);
+            PaymentPlanDO afterUpdate = paymentPlanMapper.selectById(existingPlan.getId());
+            if (afterUpdate.getPlanAmount() != null && afterUpdate.getPlanAmount().compareTo(BigDecimal.ZERO) > 0) {
+                voucherService.syncAutoVouchersFromPlan(afterUpdate);
+            } else {
+                voucherService.deleteAutoVouchersByPlan(afterUpdate);
+            }
+        }
+
+        List<OrderAdjustReqVO.Plan> requestedPlans =
+                reqVO.getReceivablePlans() != null ? reqVO.getReceivablePlans() : Collections.emptyList();
+        int newStage = existingPlans.size() + 1;
+        for (OrderAdjustReqVO.Plan requested : requestedPlans) {
+            if (requested.getId() != null || Boolean.TRUE.equals(requested.getDeleted())) {
+                continue;
+            }
+            if (requested.getPlanAmount() == null || requested.getPlanAmount().compareTo(BigDecimal.ZERO) == 0) {
+                throw exception(PAYMENT_PLAN_AMOUNT_INVALID);
+            }
+            PaymentPlanDO plan = new PaymentPlanDO();
+            plan.setPlanNo(generatePlanNo());
+            plan.setType(1);
+            plan.setOrderId(order.getId());
+            plan.setCustomerId(order.getCustomerId());
+            plan.setProjectId(order.getProjectId());
+            plan.setSupplierId(0L);
+            plan.setPlanAmount(requested.getPlanAmount());
+            plan.setPaidAmount(BigDecimal.ZERO);
+            plan.setPaymentMethod(requested.getPaymentMethod());
+            plan.setPlanDate(requested.getPlanDate() != null ? requested.getPlanDate() : LocalDate.now());
+            plan.setRemark(requested.getRemark());
+            plan.setStage(newStage++);
+            plan.setStatus(PaymentPlanStatusEnum.PENDING.getStatus());
+            plan.setActualAmount(BigDecimal.ZERO);
+            plan.setActualDate(null);
+            paymentPlanMapper.insert(plan);
+            if (plan.getPlanAmount().compareTo(BigDecimal.ZERO) > 0) {
+                voucherService.createAutoVoucherFromPlan(plan);
+            }
+        }
+    }
+
+    private void upsertAdjustedExpenses(Long orderId, List<OrderAdjustReqVO.Expense> expenses) {
+        if (CollUtil.isEmpty(expenses)) {
+            return;
+        }
+        for (OrderAdjustReqVO.Expense reqExpense : expenses) {
+            if (Boolean.TRUE.equals(reqExpense.getDeleted())) {
+                if (reqExpense.getId() != null) {
+                    expenseMapper.deleteById(reqExpense.getId());
+                }
+                continue;
+            }
+            ExpenseDO expense = new ExpenseDO();
+            expense.setOrderId(orderId);
+            expense.setExpenseDate(reqExpense.getExpenseDate());
+            expense.setFreight(reqExpense.getFreight());
+            expense.setCraneFee(reqExpense.getCraneFee());
+            expense.setCopyFee(reqExpense.getCopyFee());
+            expense.setOtherFee(reqExpense.getOtherFee());
+            expense.setVehicleNo(reqExpense.getVehicleNo());
+            expense.setRemark(reqExpense.getRemark());
+            expense.setTotalExpense(defaultBigDecimal(reqExpense.getFreight())
+                    .add(defaultBigDecimal(reqExpense.getCraneFee()))
+                    .add(defaultBigDecimal(reqExpense.getCopyFee()))
+                    .add(defaultBigDecimal(reqExpense.getOtherFee())));
+            if (reqExpense.getId() == null) {
+                expenseMapper.insert(expense);
+            } else {
+                expense.setId(reqExpense.getId());
+                expenseMapper.updateById(expense);
+            }
+        }
+    }
+
+    private void refreshOrderStatusAfterAdjust(Long orderId) {
+        OrderDO order = validateOrderExists(orderId);
+        List<PaymentPlanDO> activePlans = paymentPlanMapper.selectList(new LambdaQueryWrapperX<PaymentPlanDO>()
+                .eq(PaymentPlanDO::getOrderId, orderId)
+                .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus()));
+        Integer targetStatus = OrderStatusEnum.CONFIRMED.getStatus();
+        if (CollUtil.isEmpty(activePlans)) {
+            targetStatus = OrderStatusEnum.COMPLETED.getStatus();
+        } else {
+            List<PaymentPlanDO> receivablePlans = activePlans.stream()
+                    .filter(plan -> Integer.valueOf(1).equals(plan.getType()))
+                    .collect(Collectors.toList());
+            List<PaymentPlanDO> payablePlans = activePlans.stream()
+                    .filter(plan -> Integer.valueOf(0).equals(plan.getType()))
+                    .collect(Collectors.toList());
+            boolean allSettled = CollUtil.isNotEmpty(receivablePlans)
+                    && CollUtil.isNotEmpty(payablePlans)
+                    && activePlans.stream()
+                    .allMatch(plan -> PaymentPlanStatusEnum.PAID.getStatus().equals(plan.getStatus()));
+            if (allSettled) {
+                targetStatus = OrderStatusEnum.COMPLETED.getStatus();
+            }
+        }
+        if (!Objects.equals(order.getStatus(), targetStatus)) {
+            OrderDO update = new OrderDO();
+            update.setId(orderId);
+            update.setStatus(targetStatus);
+            orderMapper.updateById(update);
+        }
+    }
+
+    private void reconcileSubOrderAfterAdjust(Long orderId) {
+        OrderDO order = validateOrderExists(orderId);
+        if (order.getParentOrderId() != null || Integer.valueOf(1).equals(order.getIsReturn())) {
+            return;
+        }
+        OrderDO existingSubOrder = orderMapper.selectOne(new LambdaQueryWrapperX<OrderDO>()
+                .eq(OrderDO::getParentOrderId, orderId)
+                .eq(OrderDO::getOrderCategory, 1)
+                .eq(OrderDO::getIsReturn, 0));
+        if (existingSubOrder != null) {
+            if (!Objects.equals(order.getSubOrderStatus(), 1)) {
+                OrderDO update = new OrderDO();
+                update.setId(orderId);
+                update.setSubOrderStatus(1);
+                orderMapper.updateById(update);
+            }
+            return;
+        }
+        if (Objects.equals(order.getSubOrderStatus(), 0)) {
+            OrderDO update = new OrderDO();
+            update.setId(orderId);
+            update.setSubOrderStatus(2);
+            orderMapper.updateById(update);
+        }
+    }
+
+    private boolean isImmutablePlan(PaymentPlanDO plan) {
+        return Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.PAID.getStatus())
+                || Objects.equals(plan.getStatus(), PaymentPlanStatusEnum.PARTIAL.getStatus());
+    }
+
+    private BigDecimal defaultBigDecimal(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
+    }
+
+    private String generatePlanNo() {
+        return "PP" + IdUtil.getSnowflakeNextIdStr();
+    }
+
+    private static class AdjustPurchaseAllocation {
+        private Long purchaseOrderId;
+        private Long supplierId;
+        private String purchaseUnit;
+        private BigDecimal purchaseQuantity = BigDecimal.ZERO;
+        private BigDecimal weight = BigDecimal.ZERO;
+        private BigDecimal purchasePrice = BigDecimal.ZERO;
+        private BigDecimal purchaseAmount = BigDecimal.ZERO;
     }
 
     /**
@@ -2620,72 +3218,16 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void enterSettlement(Long id) {
-        // 1. 校验订单存在
         OrderDO order = validateOrderExists(id);
-
-        // 2. 校验订单状态：必须是进行中
         if (!OrderStatusEnum.CONFIRMED.getStatus().equals(order.getStatus())) {
             throw exception(ORDER_STATUS_NOT_ALLOW_SETTLEMENT);
         }
-
-        // 3. 校验成本已填充
         if (!Boolean.TRUE.equals(order.getCostFilled())) {
             throw exception(ORDER_COST_NOT_FILLED_FOR_SETTLEMENT);
         }
-
-        // 4. 校验应收计划已建立
-        List<PaymentPlanDO> receivables = paymentPlanMapper.selectList(
-                new LambdaQueryWrapperX<PaymentPlanDO>()
-                        .eq(PaymentPlanDO::getOrderId, id)
-                        .eq(PaymentPlanDO::getType, 1)
-                        .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
-        );
-        if (CollUtil.isEmpty(receivables)) {
-            throw exception(ORDER_NO_RECEIVABLE_PLAN);
-        }
-
-        // 5. 校验应付计划已建立
-        List<PaymentPlanDO> payables = paymentPlanMapper.selectList(
-                new LambdaQueryWrapperX<PaymentPlanDO>()
-                        .eq(PaymentPlanDO::getOrderId, id)
-                        .eq(PaymentPlanDO::getType, 0)
-                        .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
-        );
-        if (CollUtil.isEmpty(payables)) {
-            throw exception(ORDER_NO_PAYABLE_PLAN);
-        }
-
-        // 6. 校验应收计划总额 = 订单应收金额
-        BigDecimal receivableTotal = receivables.stream()
-                .map(PaymentPlanDO::getPlanAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (order.getPayableAmount() != null && receivableTotal.compareTo(order.getPayableAmount()) != 0) {
-            throw exception(ORDER_RECEIVABLE_AMOUNT_MISMATCH);
-        }
-
-        // 7. 校验应付计划按供应商汇总 = 各供应商采购总额
-        List<OrderItemDO> items = orderItemMapper.selectListByOrderId(id);
-        Map<Long, BigDecimal> supplierPurchaseMap = items.stream()
-                .filter(item -> item.getSupplierId() != null && item.getPurchaseAmount() != null)
-                .collect(Collectors.groupingBy(OrderItemDO::getSupplierId,
-                        Collectors.reducing(BigDecimal.ZERO, OrderItemDO::getPurchaseAmount, BigDecimal::add)));
-
-        Map<Long, BigDecimal> supplierPlanMap = payables.stream()
-                .filter(p -> p.getSupplierId() != null)
-                .collect(Collectors.groupingBy(PaymentPlanDO::getSupplierId,
-                        Collectors.reducing(BigDecimal.ZERO, PaymentPlanDO::getPlanAmount, BigDecimal::add)));
-
-        for (Map.Entry<Long, BigDecimal> entry : supplierPurchaseMap.entrySet()) {
-            BigDecimal planTotal = supplierPlanMap.getOrDefault(entry.getKey(), BigDecimal.ZERO);
-            if (planTotal.compareTo(entry.getValue()) != 0) {
-                throw exception(ORDER_PAYABLE_AMOUNT_MISMATCH);
-            }
-        }
-
-        // 8. 更新订单状态为结算中
         OrderDO updateObj = new OrderDO();
         updateObj.setId(id);
-        updateObj.setStatus(OrderStatusEnum.SETTLING.getStatus());
+        updateObj.setStatus(OrderStatusEnum.CONFIRMED.getStatus());
         orderMapper.updateById(updateObj);
 
         operationLogService.log("order", id, order.getOrderNo(),
@@ -2828,8 +3370,14 @@ public class OrderServiceImpl implements OrderService {
         if (mainOrder == null) {
             throw exception(ORDER_NOT_EXISTS);
         }
-        if (mainOrder.getSubOrderStatus() != null && mainOrder.getSubOrderStatus() == 1) {
+        if (Objects.equals(mainOrder.getSubOrderStatus(), 1)) {
             throw exception(new cn.iocoder.stmc.framework.common.exception.ErrorCode(1_030_010_100, "该订单已录入副订单"));
+        }
+        if (Objects.equals(mainOrder.getSubOrderStatus(), 2)) {
+            throw exception(new cn.iocoder.stmc.framework.common.exception.ErrorCode(1_030_010_102, "该订单已闭环，不需要录入副订单"));
+        }
+        if (!Objects.equals(mainOrder.getSubOrderStatus(), 0)) {
+            throw exception(new cn.iocoder.stmc.framework.common.exception.ErrorCode(1_030_010_103, "该订单当前不支持录入副订单"));
         }
         // 退货单不能创建副订单
         if (mainOrder.getIsReturn() != null && mainOrder.getIsReturn() == 1) {

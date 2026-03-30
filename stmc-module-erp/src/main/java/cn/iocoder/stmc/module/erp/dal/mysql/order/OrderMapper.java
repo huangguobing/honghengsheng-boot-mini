@@ -58,6 +58,7 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "COALESCE(SUM(total_net_profit), 0) as net_profit " +
             "FROM erp_order " +
             "WHERE deleted = 0 " +
+            "AND parent_order_id IS NULL " +
             "AND order_category = #{orderCategory} " +
             "AND order_date >= #{startTime} " +
             "AND order_date < #{endTime}")
@@ -79,7 +80,9 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
      * @return 订单数量
      */
     default Long selectCountByStatus(Integer status) {
-        return selectCount(OrderDO::getStatus, status);
+        return selectCount(new LambdaQueryWrapperX<OrderDO>()
+                .eq(OrderDO::getStatus, status)
+                .isNull(OrderDO::getParentOrderId));
     }
 
     /**
@@ -90,11 +93,14 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
      */
     @Select("<script>" +
             "SELECT COUNT(*) FROM erp_order WHERE deleted = 0 " +
+            "<if test='orderCategory == 0'> AND parent_order_id IS NULL </if>" +
+            "<if test='orderCategory == 1'> AND parent_order_id IS NOT NULL </if>" +
             "<if test='salesmanId != null'>" +
             "  AND salesman_id = #{salesmanId} " +
             "</if>" +
             "</script>")
-    Long selectCountBySalesman(@Param("salesmanId") Long salesmanId);
+    Long selectCountBySalesman(@Param("salesmanId") Long salesmanId,
+                               @Param("orderCategory") Integer orderCategory);
 
     /**
      * 统计指定时间范围内的订单数据（支持按业务员过滤）
@@ -113,6 +119,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "  COALESCE(SUM(total_net_profit), 0) as net_profit " +
             "FROM erp_order " +
             "WHERE deleted = 0 " +
+            "  <if test='orderCategory == 0'> AND parent_order_id IS NULL </if>" +
+            "  <if test='orderCategory == 1'> AND parent_order_id IS NOT NULL </if>" +
             "  AND order_category = #{orderCategory} " +
             "  AND order_date &gt;= #{startTime} " +
             "  AND order_date &lt; #{endTime} " +
@@ -157,6 +165,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "LEFT JOIN system_users u ON o.salesman_id = u.id " +
             "LEFT JOIN system_dept d ON u.dept_id = d.id " +
             "WHERE o.deleted = 0 " +
+            "  <if test='orderCategory == 0'> AND o.parent_order_id IS NULL </if>" +
+            "  <if test='orderCategory == 1'> AND o.parent_order_id IS NOT NULL </if>" +
             "  AND o.salesman_id IS NOT NULL " +
             "  AND o.order_category = #{orderCategory} " +
             "  <if test='startTime != null'>" +
@@ -205,6 +215,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "FROM erp_order o " +
             "LEFT JOIN erp_customer c ON o.customer_id = c.id " +
             "WHERE o.deleted = 0 " +
+            "  <if test='orderCategory == 0'> AND o.parent_order_id IS NULL </if>" +
+            "  <if test='orderCategory == 1'> AND o.parent_order_id IS NOT NULL </if>" +
             "  AND o.customer_id IS NOT NULL " +
             "  AND o.order_category = #{orderCategory} " +
             "  <if test='startTime != null'>" +
@@ -249,6 +261,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "LEFT JOIN erp_customer c ON o.customer_id = c.id " +
             "LEFT JOIN (SELECT order_id, SUM(weight) as order_weight FROM erp_order_item WHERE deleted = 0 AND item_type = 0 GROUP BY order_id) w ON w.order_id = o.id " +
             "WHERE o.deleted = 0 " +
+            "  <if test='orderCategory == 0'> AND o.parent_order_id IS NULL </if>" +
+            "  <if test='orderCategory == 1'> AND o.parent_order_id IS NOT NULL </if>" +
             "  AND o.project_id IS NOT NULL " +
             "  AND o.order_category = #{orderCategory} " +
             "  <if test='startTime != null'>" +
@@ -283,6 +297,8 @@ public interface OrderMapper extends BaseMapperX<OrderDO> {
             "FROM erp_order_item oi " +
             "INNER JOIN erp_order o ON oi.order_id = o.id " +
             "WHERE oi.deleted = 0 AND o.deleted = 0 AND oi.item_type = 0 " +
+            "  <if test='orderCategory == 0'> AND o.parent_order_id IS NULL </if>" +
+            "  <if test='orderCategory == 1'> AND o.parent_order_id IS NOT NULL </if>" +
             "  AND o.order_category = #{orderCategory} " +
             "  <if test='startTime != null'>" +
             "    AND o.create_time &gt;= #{startTime} " +

@@ -96,8 +96,9 @@ public class StatisticsController {
         // 转换日期为时间范围
         LocalDateTime startTime = startDate != null ? startDate.atStartOfDay() : null;
         LocalDateTime endTime = endDate != null ? endDate.plusDays(1).atStartOfDay() : null;
+        Integer orderCategory = getOrderCategory();
         // 查询统计数据
-        List<SupplierStatisticsRespVO> list = orderItemMapper.selectSupplierPurchaseStatistics(startTime, endTime, supplierName);
+        List<SupplierStatisticsRespVO> list = orderItemMapper.selectSupplierPurchaseStatistics(startTime, endTime, supplierName, orderCategory);
         return success(list);
     }
 
@@ -115,7 +116,24 @@ public class StatisticsController {
         LocalDateTime endTime = endDate != null ? endDate.plusDays(1).atStartOfDay() : null;
 
         // 构建查询条件
+        Integer orderCategory = getOrderCategory();
+        // 先按角色筛订单，再查这些订单下的采购明细
+        LambdaQueryWrapper<OrderDO> orderQuery = new LambdaQueryWrapper<OrderDO>()
+                .eq(OrderDO::getDeleted, false)
+                .eq(OrderDO::getOrderCategory, orderCategory);
+        if (orderCategory == 0) {
+            orderQuery.isNull(OrderDO::getParentOrderId);
+        } else {
+            orderQuery.isNotNull(OrderDO::getParentOrderId);
+        }
+        List<OrderDO> scopedOrders = orderMapper.selectList(orderQuery);
+        Set<Long> mainOrderIds = scopedOrders.stream().map(OrderDO::getId).collect(Collectors.toSet());
+        if (CollUtil.isEmpty(mainOrderIds)) {
+            return success(new PageResult<>(new ArrayList<>(), 0L));
+        }
+
         LambdaQueryWrapper<OrderItemDO> queryWrapper = new LambdaQueryWrapper<OrderItemDO>()
+                .in(OrderItemDO::getOrderId, mainOrderIds)
                 .eq(OrderItemDO::getSupplierId, supplierId)
                 .ge(startTime != null, OrderItemDO::getCreateTime, startTime)
                 .lt(endTime != null, OrderItemDO::getCreateTime, endTime)
@@ -203,10 +221,17 @@ public class StatisticsController {
         LocalDateTime endTime = endDate != null ? endDate.plusDays(1).atStartOfDay() : null;
 
         // 查询销售订单（应收总额）
+        Integer orderCategory = getOrderCategory();
         LambdaQueryWrapper<OrderDO> salesQuery = new LambdaQueryWrapper<OrderDO>()
                 .eq(OrderDO::getOrderType, 1)
+                .eq(OrderDO::getOrderCategory, orderCategory)
                 .ge(startTime != null, OrderDO::getCreateTime, startTime)
                 .lt(endTime != null, OrderDO::getCreateTime, endTime);
+        if (orderCategory == 0) {
+            salesQuery.isNull(OrderDO::getParentOrderId);
+        } else {
+            salesQuery.isNotNull(OrderDO::getParentOrderId);
+        }
         List<OrderDO> salesOrders = orderMapper.selectList(salesQuery);
 
         BigDecimal totalReceivable = BigDecimal.ZERO;
@@ -214,8 +239,11 @@ public class StatisticsController {
             totalReceivable = totalReceivable.add(o.getPayableAmount() != null ? o.getPayableAmount() : BigDecimal.ZERO);
         }
 
-        // 已收金额：从收款计划（type=1）中统计累计已收金额
+        Set<Long> mainOrderIds = salesOrders.stream().map(OrderDO::getId).collect(Collectors.toSet());
+
+        // 已收金额：从主订单的收款计划（type=1）中统计累计已收金额
         LambdaQueryWrapper<PaymentPlanDO> receivedQuery = new LambdaQueryWrapper<PaymentPlanDO>()
+                .in(CollUtil.isNotEmpty(mainOrderIds), PaymentPlanDO::getOrderId, mainOrderIds)
                 .eq(PaymentPlanDO::getType, 1)
                 .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
                 .ge(startTime != null, PaymentPlanDO::getCreateTime, startTime)
@@ -225,8 +253,9 @@ public class StatisticsController {
                 .map(p -> p.getPaidAmount() != null ? p.getPaidAmount() : BigDecimal.ZERO)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // 应付总额：从付款计划（type=0）中统计
+        // 应付总额：从主订单的付款计划（type=0）中统计
         LambdaQueryWrapper<PaymentPlanDO> payableQuery = new LambdaQueryWrapper<PaymentPlanDO>()
+                .in(CollUtil.isNotEmpty(mainOrderIds), PaymentPlanDO::getOrderId, mainOrderIds)
                 .eq(PaymentPlanDO::getType, 0)
                 .ne(PaymentPlanDO::getStatus, PaymentPlanStatusEnum.CANCELLED.getStatus())
                 .ge(startTime != null, PaymentPlanDO::getCreateTime, startTime)
@@ -257,7 +286,23 @@ public class StatisticsController {
     public CommonResult<InvoiceSummaryRespVO> getInvoiceSummary(
             @RequestParam(required = false) @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = FORMAT_YEAR_MONTH_DAY) LocalDate endDate) {
+        Integer orderCategory = getOrderCategory();
+        LambdaQueryWrapper<OrderDO> orderQuery = new LambdaQueryWrapper<OrderDO>()
+                .eq(OrderDO::getDeleted, false)
+                .eq(OrderDO::getOrderCategory, orderCategory);
+        if (orderCategory == 0) {
+            orderQuery.isNull(OrderDO::getParentOrderId);
+        } else {
+            orderQuery.isNotNull(OrderDO::getParentOrderId);
+        }
+        List<OrderDO> scopedOrders = orderMapper.selectList(orderQuery);
+        Set<Long> mainOrderIds = scopedOrders.stream().map(OrderDO::getId).collect(Collectors.toSet());
+        if (CollUtil.isEmpty(mainOrderIds)) {
+            return success(new InvoiceSummaryRespVO());
+        }
+
         LambdaQueryWrapper<VoucherDO> queryWrapper = new LambdaQueryWrapper<VoucherDO>()
+                .in(VoucherDO::getOrderId, mainOrderIds)
                 .ge(startDate != null, VoucherDO::getInvoiceDate, startDate)
                 .le(endDate != null, VoucherDO::getInvoiceDate, endDate)
                 .orderByDesc(VoucherDO::getInvoiceDate)

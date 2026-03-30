@@ -1,6 +1,7 @@
 package cn.iocoder.stmc.module.erp.service.order;
 
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
+import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderAdjustReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderCostFillReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.order.vo.OrderSaveReqVO;
@@ -154,6 +155,13 @@ public interface OrderService {
      * @param editReqVO 商品编辑请求（id + items + shippingFee + discountAmount）
      */
     void editOrderItemsSimple(@Valid OrderSaveReqVO editReqVO);
+
+    /**
+     * 订单调整闭环处理
+     *
+     * @param reqVO 调整请求
+     */
+    void adjustOrder(@Valid OrderAdjustReqVO reqVO);
 
     /**
      * 审核订单（通过）

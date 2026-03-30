@@ -1,5 +1,6 @@
 package cn.iocoder.stmc.module.erp.controller.admin.home;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.stmc.framework.common.biz.system.permission.PermissionCommonApi;
 import cn.iocoder.stmc.framework.common.pojo.CommonResult;
 import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
@@ -31,6 +32,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 
@@ -100,7 +103,7 @@ public class HomeController {
 
         // 订单数：管理员看全部，业务员只看自己的
         Long salesmanId = isAdmin ? null : userId;
-        respVO.setOrderCount(orderMapper.selectCountBySalesman(salesmanId));
+        respVO.setOrderCount(orderMapper.selectCountBySalesman(salesmanId, orderCategory));
 
         // ========== 待处理事项统计（仅管理员可见） ==========
         if (isAdmin) {
@@ -155,11 +158,21 @@ public class HomeController {
 
 
             // 本月采购单数
-            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PurchaseOrderDO> monthPurchaseQuery =
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PurchaseOrderDO>()
-                            .ge(PurchaseOrderDO::getCreateTime, monthStartTime)
-                            .lt(PurchaseOrderDO::getCreateTime, monthEndTime);
-            respVO.setMonthPurchaseOrderCount(purchaseOrderMapper.selectCount(monthPurchaseQuery));
+            List<OrderDO> monthMainOrders = orderMapper.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<OrderDO>()
+                    .isNull(OrderDO::getParentOrderId)
+                    .ge(OrderDO::getCreateTime, monthStartTime)
+                    .lt(OrderDO::getCreateTime, monthEndTime));
+            Set<Long> monthMainOrderIds = monthMainOrders.stream().map(OrderDO::getId).collect(Collectors.toSet());
+            if (CollUtil.isEmpty(monthMainOrderIds)) {
+                respVO.setMonthPurchaseOrderCount(0L);
+            } else {
+                com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PurchaseOrderDO> monthPurchaseQuery =
+                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PurchaseOrderDO>()
+                                .in(PurchaseOrderDO::getOrderId, monthMainOrderIds)
+                                .ge(PurchaseOrderDO::getCreateTime, monthStartTime)
+                                .lt(PurchaseOrderDO::getCreateTime, monthEndTime);
+                respVO.setMonthPurchaseOrderCount(purchaseOrderMapper.selectCount(monthPurchaseQuery));
+            }
 
             // 未核销发票数
             com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VoucherDO> unrecQuery =

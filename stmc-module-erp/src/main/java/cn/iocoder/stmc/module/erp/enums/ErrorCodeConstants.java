@@ -41,6 +41,11 @@ public interface ErrorCodeConstants {
     ErrorCode ORDER_RECEIVABLE_AMOUNT_MISMATCH = new ErrorCode(1_020_003_018, "应收计划总额与订单应收金额不一致");
     ErrorCode ORDER_PAYABLE_AMOUNT_MISMATCH = new ErrorCode(1_020_003_019, "应付计划总额与供应商采购金额不一致");
     ErrorCode ORDER_STATUS_NOT_ALLOW_SETTLEMENT = new ErrorCode(1_020_003_020, "当前订单状态不允许进入结算");
+    ErrorCode ORDER_STATUS_NOT_ALLOW_ADJUST = new ErrorCode(1_020_003_021, "当前订单状态不允许做退换货调整");
+    ErrorCode ORDER_ADJUST_PURCHASE_STRUCTURE_INVALID = new ErrorCode(1_020_003_022, "订单调整不允许新增、删除或更换采购单");
+    ErrorCode ORDER_ADJUST_SUPPLIER_CHANGED = new ErrorCode(1_020_003_023, "订单调整不允许修改采购单供应商");
+    ErrorCode ORDER_ADJUST_ITEM_PURCHASE_UNASSIGNED = new ErrorCode(1_020_003_024, "调整后的商品必须重新分配到采购单");
+    ErrorCode ORDER_ADJUST_ITEM_PURCHASE_MULTI_ASSIGNED = new ErrorCode(1_020_003_025, "同一商品不能重复分配到多个采购单");
 
     // ========== 付款管理 1-020-004-000 ==========
     ErrorCode PAYMENT_NOT_EXISTS = new ErrorCode(1_020_004_000, "付款记录不存在");
@@ -73,6 +78,7 @@ public interface ErrorCodeConstants {
     ErrorCode PAYMENT_PLAN_STATUS_NOT_ALLOW_CANCEL = new ErrorCode(1_020_006_012, "当前付款计划状态不允许取消");
     ErrorCode PAYMENT_PLAN_HISTORICAL_CANCELLED_READ_ONLY = new ErrorCode(1_020_006_013, "历史已取消付款计划只读，不允许修改");
     ErrorCode PAYMENT_PLAN_PARTIAL_ALREADY_EXISTS = new ErrorCode(1_020_006_014, "付款计划已处于部分付款状态");
+    ErrorCode PAYMENT_PLAN_NEGATIVE_ONLY_FOR_RECEIVABLE = new ErrorCode(1_020_006_015, "只有应收计划允许录入负数补差");
 
     // ========== 产品管理 1-020-007-000 ==========
     ErrorCode PRODUCT_NOT_EXISTS = new ErrorCode(1_020_007_000, "产品不存在");
