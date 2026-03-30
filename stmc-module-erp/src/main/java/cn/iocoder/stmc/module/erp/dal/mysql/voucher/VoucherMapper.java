@@ -19,6 +19,7 @@ public interface VoucherMapper extends BaseMapperX<VoucherDO> {
 
     default PageResult<VoucherDO> selectPage(VoucherPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<VoucherDO>()
+                .inIfPresent(VoucherDO::getOrderId, reqVO.getVisibleOrderIds())
                 .eqIfPresent(VoucherDO::getVoucherType, reqVO.getVoucherType())
                 .eqIfPresent(VoucherDO::getDirection, reqVO.getDirection())
                 .eqIfPresent(VoucherDO::getReconcileStatus, reqVO.getReconcileStatus())

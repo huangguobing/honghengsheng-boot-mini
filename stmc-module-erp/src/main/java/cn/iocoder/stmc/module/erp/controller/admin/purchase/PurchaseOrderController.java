@@ -6,8 +6,11 @@ import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.purchase.vo.*;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderDO;
+import cn.iocoder.stmc.module.erp.dal.mysql.order.OrderMapper;
 import cn.iocoder.stmc.module.erp.dal.dataobject.purchase.PurchaseOrderItemDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.supplier.SupplierDO;
+import cn.iocoder.stmc.framework.common.biz.system.permission.PermissionCommonApi;
+import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.stmc.module.erp.service.order.OrderService;
 import cn.iocoder.stmc.module.erp.service.purchase.PurchaseOrderService;
 import cn.iocoder.stmc.module.erp.service.supplier.SupplierService;
@@ -23,6 +26,8 @@ import javax.validation.Valid;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import cn.iocoder.stmc.framework.mybatis.core.query.LambdaQueryWrapperX;
+
 import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 
 @Tag(name = "管理后台 - ERP 采购单")
@@ -30,6 +35,9 @@ import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 @RequestMapping("/erp/purchase-order")
 @Validated
 public class PurchaseOrderController {
+
+    private static final String[] ADMIN_ROLES = {"super_admin", "honghengsheng"};
+    private static final String[] ROLE_B = {"xihuidaxin"};
 
     @Resource
     private PurchaseOrderService purchaseOrderService;
@@ -39,6 +47,12 @@ public class PurchaseOrderController {
 
     @Resource
     private OrderService orderService;
+
+    @Resource
+    private OrderMapper orderMapper;
+
+    @Resource
+    private PermissionCommonApi permissionApi;
 
     @PostMapping("/create")
     @Operation(summary = "创建采购单")
@@ -73,6 +87,9 @@ public class PurchaseOrderController {
         if (purchaseOrder == null) {
             return success(null);
         }
+        if (!canAccessOrder(purchaseOrder.getOrderId())) {
+            return success(null);
+        }
         PurchaseOrderRespVO respVO = BeanUtils.toBean(purchaseOrder, PurchaseOrderRespVO.class);
         // 填充明细
         List<PurchaseOrderItemDO> items = purchaseOrderService.getPurchaseOrderItems(id);
@@ -98,6 +115,7 @@ public class PurchaseOrderController {
     @Operation(summary = "获得采购单分页")
     @PreAuthorize("@ss.hasPermission('erp:purchase-order:query')")
     public CommonResult<PageResult<PurchaseOrderRespVO>> getPurchaseOrderPage(@Valid PurchaseOrderPageReqVO pageVO) {
+        pageVO.setVisibleOrderIds(new ArrayList<>(getVisibleOrderIds()));
         PageResult<PurchaseOrderDO> pageResult = purchaseOrderService.getPurchaseOrderPage(pageVO);
         PageResult<PurchaseOrderRespVO> respPage = BeanUtils.toBean(pageResult, PurchaseOrderRespVO.class);
         // 批量填充供应商名称
@@ -151,6 +169,9 @@ public class PurchaseOrderController {
     @Parameter(name = "orderId", description = "销售订单编号", required = true)
     @PreAuthorize("@ss.hasPermission('erp:purchase-order:query')")
     public CommonResult<List<PurchaseOrderRespVO>> getPurchaseOrderListByOrderId(@RequestParam("orderId") Long orderId) {
+        if (!canAccessOrder(orderId)) {
+            return success(Collections.emptyList());
+        }
         List<PurchaseOrderDO> list = purchaseOrderService.getPurchaseOrdersByOrderId(orderId);
         List<PurchaseOrderRespVO> respList = BeanUtils.toBean(list, PurchaseOrderRespVO.class);
         if (!respList.isEmpty()) {
@@ -177,6 +198,21 @@ public class PurchaseOrderController {
             ));
         }
         return success(respList);
+    }
+
+    private boolean canAccessOrder(Long orderId) {
+        return getVisibleOrderIds().contains(orderId);
+    }
+
+    private Set<Long> getVisibleOrderIds() {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        LambdaQueryWrapperX<OrderDO> wrapper = new LambdaQueryWrapperX<OrderDO>();
+        if (userId != null && permissionApi.hasAnyRoles(userId, ROLE_B)) {
+            wrapper.eq(OrderDO::getOrderCategory, 1).isNotNull(OrderDO::getParentOrderId);
+        } else {
+            wrapper.eq(OrderDO::getOrderCategory, 0).isNull(OrderDO::getParentOrderId);
+        }
+        return orderMapper.selectList(wrapper).stream().map(OrderDO::getId).collect(Collectors.toSet());
     }
 
 }

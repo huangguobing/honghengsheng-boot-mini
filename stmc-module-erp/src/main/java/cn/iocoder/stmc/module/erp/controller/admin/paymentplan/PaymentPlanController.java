@@ -1,9 +1,11 @@
 package cn.iocoder.stmc.module.erp.controller.admin.paymentplan;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.iocoder.stmc.framework.common.biz.system.permission.PermissionCommonApi;
 import cn.iocoder.stmc.framework.common.pojo.CommonResult;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
+import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanAvailableOrderRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanAvailableOrderRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanPageReqVO;
@@ -12,6 +14,7 @@ import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.PaymentPlanSav
 import cn.iocoder.stmc.module.erp.controller.admin.paymentplan.vo.ReconcileSummaryVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.customer.CustomerDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
+import cn.iocoder.stmc.module.erp.dal.mysql.order.OrderMapper;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.paymentplan.PaymentPlanDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.supplier.SupplierDO;
@@ -33,6 +36,8 @@ import java.math.BigDecimal;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import cn.iocoder.stmc.framework.mybatis.core.query.LambdaQueryWrapperX;
+
 import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 
 /**
@@ -45,6 +50,9 @@ import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 @RequestMapping("/erp/payment-plan")
 @Validated
 public class PaymentPlanController {
+
+    private static final String[] ADMIN_ROLES = {"super_admin", "honghengsheng"};
+    private static final String[] ROLE_B = {"xihuidaxin"};
 
     @Resource
     private PaymentPlanService paymentPlanService;
@@ -59,10 +67,17 @@ public class PaymentPlanController {
     @Resource
     private cn.iocoder.stmc.module.erp.service.project.ProjectService projectService;
 
+    @Resource
+    private OrderMapper orderMapper;
+
+    @Resource
+    private PermissionCommonApi permissionApi;
+
     @GetMapping("/page")
     @Operation(summary = "获取付款计划分页")
     @PreAuthorize("@ss.hasPermission('erp:payment-plan:query')")
     public CommonResult<PageResult<PaymentPlanRespVO>> getPaymentPlanPage(@Validated PaymentPlanPageReqVO pageReqVO) {
+        pageReqVO.setVisibleOrderIds(new ArrayList<>(getVisibleOrderIds()));
         PageResult<PaymentPlanDO> pageResult = paymentPlanService.getPaymentPlanPage(pageReqVO);
         // 转换为VO并填充关联信息
         PageResult<PaymentPlanRespVO> voPageResult = BeanUtils.toBean(pageResult, PaymentPlanRespVO.class);
@@ -75,6 +90,9 @@ public class PaymentPlanController {
     @Parameter(name = "orderId", description = "订单编号", required = true)
     @PreAuthorize("@ss.hasPermission('erp:payment-plan:query')")
     public CommonResult<List<PaymentPlanRespVO>> getPaymentPlansByOrderId(@RequestParam("orderId") Long orderId) {
+        if (!canAccessOrder(orderId)) {
+            return success(Collections.emptyList());
+        }
         List<PaymentPlanDO> list = paymentPlanService.getPaymentPlansByOrderId(orderId);
         List<PaymentPlanRespVO> voList = BeanUtils.toBean(list, PaymentPlanRespVO.class);
         fillPaymentPlanInfo(voList);
@@ -86,6 +104,10 @@ public class PaymentPlanController {
     @Parameter(name = "paymentId", description = "付款单编号", required = true)
     @PreAuthorize("@ss.hasPermission('erp:payment-plan:query')")
     public CommonResult<List<PaymentPlanRespVO>> getPaymentPlansByPaymentId(@RequestParam("paymentId") Long paymentId) {
+        PaymentDO payment = paymentService.getPayment(paymentId);
+        if (payment == null || !canAccessOrder(payment.getOrderId())) {
+            return success(Collections.emptyList());
+        }
         List<PaymentPlanDO> list = paymentPlanService.getPaymentPlansByPaymentId(paymentId);
         List<PaymentPlanRespVO> voList = BeanUtils.toBean(list, PaymentPlanRespVO.class);
         fillPaymentPlanInfo(voList);
@@ -276,6 +298,21 @@ public class PaymentPlanController {
                 }
             }
         }
+    }
+
+    private boolean canAccessOrder(Long orderId) {
+        return getVisibleOrderIds().contains(orderId);
+    }
+
+    private Set<Long> getVisibleOrderIds() {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        LambdaQueryWrapperX<OrderDO> wrapper = new LambdaQueryWrapperX<OrderDO>();
+        if (userId != null && permissionApi.hasAnyRoles(userId, ROLE_B)) {
+            wrapper.eq(OrderDO::getOrderCategory, 1).isNotNull(OrderDO::getParentOrderId);
+        } else {
+            wrapper.eq(OrderDO::getOrderCategory, 0).isNull(OrderDO::getParentOrderId);
+        }
+        return orderMapper.selectList(wrapper).stream().map(OrderDO::getId).collect(Collectors.toSet());
     }
 
 }

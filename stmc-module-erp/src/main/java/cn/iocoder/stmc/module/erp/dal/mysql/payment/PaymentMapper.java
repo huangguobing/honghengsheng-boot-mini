@@ -21,6 +21,7 @@ public interface PaymentMapper extends BaseMapperX<PaymentDO> {
 
     default PageResult<PaymentDO> selectPage(PaymentPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<PaymentDO>()
+                .inIfPresent(PaymentDO::getOrderId, reqVO.getVisibleOrderIds())
                 .likeIfPresent(PaymentDO::getPaymentNo, reqVO.getPaymentNo())
                 .eqIfPresent(PaymentDO::getSupplierId, reqVO.getSupplierId())
                 .eqIfPresent(PaymentDO::getOrderId, reqVO.getOrderId())

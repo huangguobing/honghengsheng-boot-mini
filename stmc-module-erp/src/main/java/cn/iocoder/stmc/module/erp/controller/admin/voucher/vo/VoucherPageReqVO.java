@@ -5,6 +5,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.util.List;
+
 @Schema(description = "管理后台 - ERP 票据凭证分页 Request VO")
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -24,5 +26,8 @@ public class VoucherPageReqVO extends PageParam {
 
     @Schema(description = "发票代码", example = "012345678901")
     private String invoiceCode;
+
+    @Schema(description = "当前角色可见的订单ID集合")
+    private List<Long> visibleOrderIds;
 
 }

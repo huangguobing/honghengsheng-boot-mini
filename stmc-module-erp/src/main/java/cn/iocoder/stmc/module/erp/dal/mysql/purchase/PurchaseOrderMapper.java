@@ -19,6 +19,7 @@ public interface PurchaseOrderMapper extends BaseMapperX<PurchaseOrderDO> {
 
     default PageResult<PurchaseOrderDO> selectPage(PurchaseOrderPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<PurchaseOrderDO>()
+                .inIfPresent(PurchaseOrderDO::getOrderId, reqVO.getVisibleOrderIds())
                 .eqIfPresent(PurchaseOrderDO::getOrderId, reqVO.getOrderId())
                 .eqIfPresent(PurchaseOrderDO::getSupplierId, reqVO.getSupplierId())
                 .eqIfPresent(PurchaseOrderDO::getStatus, reqVO.getStatus())

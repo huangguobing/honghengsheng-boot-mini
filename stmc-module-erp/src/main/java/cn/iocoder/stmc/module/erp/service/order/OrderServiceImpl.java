@@ -3370,6 +3370,9 @@ public class OrderServiceImpl implements OrderService {
         if (mainOrder == null) {
             throw exception(ORDER_NOT_EXISTS);
         }
+        if (!Integer.valueOf(0).equals(mainOrder.getOrderCategory()) || mainOrder.getParentOrderId() != null) {
+            throw exception(new cn.iocoder.stmc.framework.common.exception.ErrorCode(1_030_010_104, "只有主订单允许创建副订单"));
+        }
         if (Objects.equals(mainOrder.getSubOrderStatus(), 1)) {
             throw exception(new cn.iocoder.stmc.framework.common.exception.ErrorCode(1_030_010_100, "该订单已录入副订单"));
         }

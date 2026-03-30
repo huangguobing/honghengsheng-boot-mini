@@ -6,6 +6,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.ToString;
 
+import java.util.List;
+
 @Schema(description = "管理后台 - ERP 采购单分页 Request VO")
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -23,5 +25,8 @@ public class PurchaseOrderPageReqVO extends PageParam {
 
     @Schema(description = "采购单号", example = "PO-20260305")
     private String purchaseNo;
+
+    @Schema(description = "当前角色可见的订单ID集合")
+    private List<Long> visibleOrderIds;
 
 }

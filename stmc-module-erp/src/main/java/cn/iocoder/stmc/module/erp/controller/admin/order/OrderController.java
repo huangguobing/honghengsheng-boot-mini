@@ -131,6 +131,16 @@ public class OrderController {
         if (order == null) {
             return success(null);
         }
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (isRoleB(userId)) {
+            if (!Integer.valueOf(1).equals(order.getOrderCategory()) || order.getParentOrderId() == null) {
+                return success(null);
+            }
+        } else {
+            if (!Integer.valueOf(0).equals(order.getOrderCategory()) || order.getParentOrderId() != null) {
+                return success(null);
+            }
+        }
 
         // 构建响应
         OrderRespVO respVO = BeanUtils.toBean(order, OrderRespVO.class);
@@ -202,9 +212,9 @@ public class OrderController {
         // 数据权限过滤：根据角色设置订单类别和数据范围
         Long userId = SecurityFrameworkUtils.getLoginUserId();
         if (isRoleB(userId)) {
-            // B角色只看副订单，且只看自己录入的
+            // B角色看全部副订单
             pageVO.setOrderCategory(1);
-            pageVO.setSalesmanId(userId);
+            pageVO.setSalesmanId(null);
         } else if (isAdmin(userId)) {
             // A角色/超管只看主订单
             if (pageVO.getOrderCategory() == null) {
@@ -433,6 +443,7 @@ public class OrderController {
     public CommonResult<List<OrderRespVO>> getPendingSubOrders() {
         List<OrderDO> orders = orderMapper.selectList(new LambdaQueryWrapperX<OrderDO>()
                 .eq(OrderDO::getOrderCategory, 0)
+                .isNull(OrderDO::getParentOrderId)
                 .eq(OrderDO::getSubOrderStatus, 0)
                 .eq(OrderDO::getIsReturn, 0)
                 .orderByDesc(OrderDO::getCreateTime));
@@ -459,6 +470,7 @@ public class OrderController {
     public CommonResult<Long> getPendingSubOrderCount() {
         Long count = orderMapper.selectCount(new LambdaQueryWrapperX<OrderDO>()
                 .eq(OrderDO::getOrderCategory, 0)
+                .isNull(OrderDO::getParentOrderId)
                 .eq(OrderDO::getSubOrderStatus, 0)
                 .eq(OrderDO::getIsReturn, 0));
         return success(count);
@@ -476,9 +488,14 @@ public class OrderController {
     @Parameter(name = "parentOrderId", description = "主订单ID", required = true)
     @PreAuthorize("@ss.hasPermission('erp:order:query')")
     public CommonResult<OrderRespVO> getSubOrderByParent(@RequestParam Long parentOrderId) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (!isRoleB(userId)) {
+            return success(null);
+        }
         OrderDO subOrder = orderMapper.selectOne(new LambdaQueryWrapperX<OrderDO>()
                 .eq(OrderDO::getParentOrderId, parentOrderId)
                 .eq(OrderDO::getOrderCategory, 1)
+                .isNotNull(OrderDO::getParentOrderId)
                 .eq(OrderDO::getIsReturn, 0));
         if (subOrder == null) {
             return success(null);

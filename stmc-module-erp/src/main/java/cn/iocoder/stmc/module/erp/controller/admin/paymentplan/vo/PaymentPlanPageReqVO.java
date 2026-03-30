@@ -51,4 +51,7 @@ public class PaymentPlanPageReqVO extends PageParam {
     @Schema(description = "订单编号", example = "1")
     private Long orderId;
 
+    @Schema(description = "当前角色可见的订单ID集合")
+    private List<Long> visibleOrderIds;
+
 }

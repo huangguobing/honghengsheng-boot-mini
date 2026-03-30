@@ -1,15 +1,18 @@
 package cn.iocoder.stmc.module.erp.controller.admin.payment;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.iocoder.stmc.framework.common.biz.system.permission.PermissionCommonApi;
 import cn.iocoder.stmc.framework.common.pojo.CommonResult;
 import cn.iocoder.stmc.framework.common.pojo.PageResult;
 import cn.iocoder.stmc.framework.common.util.object.BeanUtils;
+import cn.iocoder.stmc.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentPageReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentRespVO;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSaveReqVO;
 import cn.iocoder.stmc.module.erp.controller.admin.payment.vo.PaymentSupplierSummaryRespVO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.customer.CustomerDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.order.OrderDO;
+import cn.iocoder.stmc.module.erp.dal.mysql.order.OrderMapper;
 import cn.iocoder.stmc.module.erp.dal.dataobject.payment.PaymentDO;
 import cn.iocoder.stmc.module.erp.dal.dataobject.supplier.SupplierDO;
 import cn.iocoder.stmc.module.erp.service.customer.CustomerService;
@@ -25,11 +28,14 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.validation.Valid;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import cn.iocoder.stmc.framework.mybatis.core.query.LambdaQueryWrapperX;
 
 import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 
@@ -38,6 +44,9 @@ import static cn.iocoder.stmc.framework.common.pojo.CommonResult.success;
 @RequestMapping("/erp/payment")
 @Validated
 public class PaymentController {
+
+    private static final String[] ADMIN_ROLES = {"super_admin", "honghengsheng"};
+    private static final String[] ROLE_B = {"xihuidaxin"};
 
     @Resource
     private PaymentService paymentService;
@@ -50,6 +59,12 @@ public class PaymentController {
 
     @Resource
     private OrderService orderService;
+
+    @Resource
+    private OrderMapper orderMapper;
+
+    @Resource
+    private PermissionCommonApi permissionApi;
 
     @PostMapping("/create")
     @Operation(summary = "创建付款")
@@ -90,6 +105,9 @@ public class PaymentController {
     @PreAuthorize("@ss.hasPermission('erp:payment:query')")
     public CommonResult<PaymentRespVO> getPayment(@RequestParam("id") Long id) {
         PaymentDO payment = paymentService.getPayment(id);
+        if (payment == null || !canAccessOrder(payment.getOrderId())) {
+            return success(null);
+        }
         return success(BeanUtils.toBean(payment, PaymentRespVO.class));
     }
 
@@ -97,6 +115,7 @@ public class PaymentController {
     @Operation(summary = "获得付款分页")
     @PreAuthorize("@ss.hasPermission('erp:payment:query')")
     public CommonResult<PageResult<PaymentRespVO>> getPaymentPage(@Valid PaymentPageReqVO pageVO) {
+        pageVO.setVisibleOrderIds(new ArrayList<>(getVisibleOrderIds()));
         PageResult<PaymentDO> pageResult = paymentService.getPaymentPage(pageVO);
         PageResult<PaymentRespVO> voPageResult = BeanUtils.toBean(pageResult, PaymentRespVO.class);
         // 填充关联信息
@@ -109,6 +128,9 @@ public class PaymentController {
     @Parameter(name = "orderId", description = "订单编号", required = true)
     @PreAuthorize("@ss.hasPermission('erp:payment:query')")
     public CommonResult<List<PaymentRespVO>> getPaymentListByOrderId(@RequestParam("orderId") Long orderId) {
+        if (!canAccessOrder(orderId)) {
+            return success(Collections.emptyList());
+        }
         List<PaymentDO> list = paymentService.getPaymentListByOrderId(orderId);
         List<PaymentRespVO> voList = BeanUtils.toBean(list, PaymentRespVO.class);
         fillPaymentInfo(voList);
@@ -175,6 +197,21 @@ public class PaymentController {
                 }
             }
         }
+    }
+
+    private boolean canAccessOrder(Long orderId) {
+        return getVisibleOrderIds().contains(orderId);
+    }
+
+    private Set<Long> getVisibleOrderIds() {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        LambdaQueryWrapperX<OrderDO> wrapper = new LambdaQueryWrapperX<OrderDO>();
+        if (userId != null && permissionApi.hasAnyRoles(userId, ROLE_B)) {
+            wrapper.eq(OrderDO::getOrderCategory, 1).isNotNull(OrderDO::getParentOrderId);
+        } else {
+            wrapper.eq(OrderDO::getOrderCategory, 0).isNull(OrderDO::getParentOrderId);
+        }
+        return orderMapper.selectList(wrapper).stream().map(OrderDO::getId).collect(Collectors.toSet());
     }
 
 }

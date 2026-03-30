@@ -20,6 +20,7 @@ public interface ExpenseMapper extends BaseMapperX<ExpenseDO> {
 
     default PageResult<ExpenseDO> selectPage(ExpensePageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<ExpenseDO>()
+                .inIfPresent(ExpenseDO::getOrderId, reqVO.getVisibleOrderIds())
                 .eqIfPresent(ExpenseDO::getOrderId, reqVO.getOrderId())
                 .betweenIfPresent(ExpenseDO::getExpenseDate, reqVO.getExpenseDate())
                 .orderByDesc(ExpenseDO::getId));
